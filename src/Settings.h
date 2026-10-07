@@ -1,0 +1,58 @@
+#pragma once
+
+// DetailedMiniMap.ini (shipped defaults) + DetailedMiniMap_User.ini (what the menu saves), key by key
+namespace Settings
+{
+    struct MapSettings
+    {
+        bool          enabled = true;
+        std::uint32_t toggleKey = 49;        // DirectInput scan code (49 = N): the minimap shown / hidden, fading (0 = none)
+        bool          visible = true;        // shown (the key switches it; remembered)
+        int           language = -1;       // the menu's language (Lang order: ru en fr it de es pl zh ja); -1 = the game's
+        float         minimapSize = 600.0f;  // pixels at 1080p
+        float         minimapRange = 3700.0f;  // world units from the centre to the edge (outside)
+        float         minimapRangeInside = 1200.0f;  // ...in caves and houses
+        float         minimapTilt = 55.0f;   // degrees above the floor the minimap is seen from (90 = straight down)
+        bool          northUp = false;       // the minimap keeps north up instead of turning with the camera
+        bool          minimapRound = true;   // a round minimap instead of the square
+        float         minimapCorner = 40.0f; // the square minimap: its corners rounded this far (px at 1080p; 0 = sharp)
+        // icons
+        float         iconSize = 1.0f;       // scale of every icon
+        float         iconFadeIn = 0.35f;    // seconds an icon takes to show up
+        float         iconFadeOut = 0.35f;   // ...and to go once its thing is gone (picked up, dead, out of range)
+        std::array<bool, 12> show{ true, true, true, true, true, true, true, true, true, true, true, true };  // per icon kind (Icons::Kind order); the menu toggles them
+        bool          cut = true;            // cut away what is over the character (roofs, ceilings)
+        float         cutHeight = 80.0f;     // inside: geometry this far over the feet is cut away (roofs, ceilings)
+        // the look (the menu's second page; {} = the defaults)
+        struct Look
+        {
+            bool  grid = false;                               // lines on the ground every gridSize units
+            float gridSize = 128.0f;
+            bool  contours = false;                           // height lines every contourStep units
+            float contourStep = 64.0f;
+            float lineStrength = 1.0f;                        // how bright both kinds of lines are
+            float groundColor[3] = { 0.333f, 0.466f, 0.229f };  // the landscape (inside: flat floors)
+            float groundBrightness = 1.0f;
+            float groundOpacity = 1.0f;
+            float geometryColor[3] = { 0.597f, 0.607f, 0.626f };  // everything else: buildings, rocks, furniture...
+            float geometryBrightness = 1.0f;
+            float geometryOpacity = 1.0f;
+            float depthShade = 0.5f;                          // how dark the lowest levels get (0 = not at all)
+            float fadeTime = 0.8f;                            // seconds a newly scanned part takes to fade in
+            // roads: the navmesh's preferred triangles (orange in the Creation Kit), drawn over the ground
+            bool  roads = true;
+            float roadColor[3] = { 0.632f, 0.486f, 0.262f };
+            float roadWidth = 1.0f;                           // 1 .. 3: 1 = as the navmesh has it, every step past 1 widens by 150 units a side
+            bool  water = true;                               // lakes, rivers, the sea
+            float waterColor[3] = { 0.146f, 0.392f, 0.637f };
+            int   style = 1;                                  // 0 = the colours above, 1 = vanilla (the game's local map: sepia, its frame)
+        } look;
+    };
+
+    MapSettings& Map();
+
+    void Load();
+    void Save();
+
+    std::string KeyName(std::uint32_t a_key);  // for the menu
+}

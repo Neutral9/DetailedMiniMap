@@ -1,0 +1,12 @@
+# build output
+build/
+.xmake/
+vsxmake*/
+*.dll
+*.pdb
+*.obj
+*.pch
+# IDE
+.vs/
+.vscode/
+*.user

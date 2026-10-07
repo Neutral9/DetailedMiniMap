@@ -1,0 +1,84 @@
+#pragma once
+
+// The menu's texts in nine languages, read once from Data/SKSE/Plugins/DetailedMiniMap/Translations/<code>.txt
+// ("Key = text"; ru en fr it de es pl zh ja). The language is the one set in the menu, or the game's own (sLanguage)
+// until one is set. A text a file lacks comes from en.txt, then is the key itself.
+namespace Lang
+{
+    enum class S : int
+    {
+        Intro,
+        Language,
+        Enabled,
+        ToggleKey,
+        PressKey,
+        KeyNone,
+        SecMinimap,
+        Shape,
+        Square,
+        Round,
+        Corner,
+        NorthUp,
+        Size,
+        RangeOutside,
+        RangeInside,
+        Tilt,
+        SecIcons,
+        IconSize,
+        IconFadeIn,
+        IconFadeOut,
+        AtOnce,
+        SecCut,
+        CutCover,
+        CutHeight,
+        Style,
+        StyleColour,
+        StyleVanilla,
+        SecGround,
+        GroundColor,
+        GroundBrightness,
+        GroundOpacity,
+        Grid,
+        GridStep,
+        Contours,
+        ContourStep,
+        LineBrightness,
+        SecGeometry,
+        GeometryColor,
+        GeometryBrightness,
+        GeometryOpacity,
+        SecRoadsWater,
+        Roads,
+        RoadColor,
+        RoadWidth,
+        Water,
+        WaterColor,
+        SecOther,
+        DepthShade,
+        FadeTime,
+        ResetLook,
+        TabMap,
+        TabLook,
+        // the icon kinds, in Icons::Kind order
+        Enemies,
+        Guards,
+        Residents,
+        Followers,
+        Animals,
+        Doors,
+        Food,
+        Potions,
+        Chests,
+        Weapons,
+        Armor,
+        Loot,
+        kCount
+    };
+
+    inline constexpr int kLanguages = 9;
+
+    const char* Name(int a_language);  // a language's own name, for the menu
+    int         Current();             // the language in use: the menu's choice, else the game's
+    const char* T(S a_text);           // a text in the language in use
+    std::string L(S a_text);           // the same with a fixed ImGui id ("text###id"): a widget keeps its state across languages
+}
