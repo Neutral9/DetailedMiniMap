@@ -41,6 +41,10 @@ namespace MapMesh
             ID3D11Buffer*              vb = nullptr;
             ID3D11Buffer*              ib = nullptr;
             float                      shownAt = 0.0f;  // Now() it first went on the map (0: not yet): it fades in from there
+            // part 0: the set it was built from - each shape by name and counts, sorted (what came, what went); with the
+            // detailed log on also the names
+            std::vector<std::uint64_t>                          shapes;
+            std::vector<std::pair<std::uint64_t, std::string>> names;
         };
         std::uint64_t MeshKey(RE::FormID a_cell, std::uint32_t a_part) { return (static_cast<std::uint64_t>(a_cell) << 32) | a_part; }
 
@@ -88,11 +92,26 @@ namespace MapMesh
         std::uint64_t                                      tick = 0;
         float                                              sinceHarvest = kHarvestEvery;
         bool                                               harvestAgain = false;  // cells left over (the copy budget ran out): harvest again next frame
+        // the detailed log's numbers (main thread; the render thread's are atomics)
+        struct Perf
+        {
+            float                     since = 0.0f;  // seconds since the last report
+            int                       frames = 0;
+            double                    mainMs = 0.0, mainMax = 0.0;  // the minimap's whole update a frame, the harvest in it
+            double                    harvestMs = 0.0, harvestMax = 0.0;
+            int                       harvests = 0;
+            int                       builds = 0, rebuilds = 0, carried = 0;  // cells built, built again, old land / water kept
+            std::atomic<int>          renders = 0, redraws = 0;
+            std::atomic<std::int64_t> renderUs = 0, renderMaxUs = 0;
+            bool                      environment = false;  // logged once
+        } perf;
         std::size_t                                        gpuRead = 0, gpuFailed = 0;
         // main thread
         std::unordered_map<RE::FormID, std::uint64_t>      lastSignature;  // per cell, the set seen at the last harvest
         std::unordered_map<RE::FormID, int>                unsettled;      // per cell, harvests its set has differed from the one on the map
         std::unordered_map<RE::FormID, std::uint64_t>      lastCheck;      // per cell, the harvest it was last looked at
+        std::unordered_map<RE::FormID, int>                shrinking;      // per cell on the map, harvests its set has only lost shapes (hidden for a moment, or gone)
+        std::unordered_map<RE::FormID, std::uint64_t>      lastBuilt;      // per cell, the harvest it was last built at
 
         RE::FormID mapSpace = 0;        // the world space (or the room) the map shows
         bool       hasGeometry = false;  // something gathered since the map was last turned off
@@ -256,17 +275,32 @@ namespace MapMesh
             return a_x ^ (a_x >> 31);
         }
 
-        // the set of meshes of a cell: every shape by its name and counts, in any order - it changes when something comes
-        // or goes. Not where they stand: a pushed bucket or an opened door is the same map,
-        // and havok settles things a little differently each time
-        std::uint64_t Signature(const std::vector<RE::BSTriShape*>& a_shapes)
+        // a shape by its name and counts. Not where it stands: a pushed bucket or an opened door is the same map, and
+        // havok settles things a little differently each time
+        std::uint64_t ShapeHash(RE::BSTriShape* a_shape)
         {
-            std::uint64_t s = Mix(a_shapes.size());
+            const auto&   c = a_shape->GetTrishapeRuntimeData();
+            std::uint64_t h = std::hash<std::string_view>{}(a_shape->name.c_str());
+            h = Mix(h ^ c.triangleCount);
+            return Mix(h ^ c.vertexCount);
+        }
+
+        std::vector<std::uint64_t> ShapeHashes(const std::vector<RE::BSTriShape*>& a_shapes)  // sorted
+        {
+            std::vector<std::uint64_t> out;
+            out.reserve(a_shapes.size());
             for (const auto shape : a_shapes) {
-                const auto&   c = shape->GetTrishapeRuntimeData();
-                std::uint64_t h = std::hash<std::string_view>{}(shape->name.c_str());
-                h = Mix(h ^ c.triangleCount);
-                h = Mix(h ^ c.vertexCount);
+                out.push_back(ShapeHash(shape));
+            }
+            std::ranges::sort(out);
+            return out;
+        }
+
+        // the set of meshes of a cell, in any order: it changes when something comes or goes
+        std::uint64_t Signature(const std::vector<std::uint64_t>& a_hashes)
+        {
+            std::uint64_t s = Mix(a_hashes.size());
+            for (const auto h : a_hashes) {
                 s += h;
             }
             return s;
@@ -425,12 +459,19 @@ namespace MapMesh
         }
 
         // the meshes with a usable CPU copy into one cell mesh; the others become GPU jobs
-        std::unique_ptr<CellMesh> Build(RE::FormID a_id, RE::FormID a_space, const std::vector<RE::BSTriShape*>& a_shapes, std::vector<GpuJob>& a_jobs, BuildStats& a_stats)
+        std::unique_ptr<CellMesh> Build(RE::FormID a_id, RE::FormID a_space, const std::vector<RE::BSTriShape*>& a_shapes, std::vector<std::uint64_t> a_hashes,
+            std::vector<GpuJob>& a_jobs, BuildStats& a_stats)
         {
             auto m = std::make_unique<CellMesh>();
             m->cell = a_id;
             m->space = a_space;
-            m->signature = Signature(a_shapes);
+            m->signature = Signature(a_hashes);
+            m->shapes = std::move(a_hashes);
+            if (Settings::Map().debugLog) {
+                for (const auto shape : a_shapes) {
+                    m->names.emplace_back(ShapeHash(shape), shape->name.c_str());
+                }
+            }
             m->serial = ++buildSerial;
             std::uint32_t part = 1;
             for (const auto shape : a_shapes) {
@@ -516,6 +557,8 @@ namespace MapMesh
             lastSignature.erase(a_cell);
             unsettled.erase(a_cell);
             lastCheck.erase(a_cell);
+            shrinking.erase(a_cell);
+            lastBuilt.erase(a_cell);
         }
 
         void EvictOver()  // main thread, under meshLock: the cells longest out of sight go once there are too many triangles
@@ -542,8 +585,9 @@ namespace MapMesh
             }
         }
 
-        // a group replaced by a new build of it: what is the same as before (a part of the same kind, size and place)
-        // stays as it was on the map - no fade again; only what is new fades in (a house, water that came later)
+        // a group replaced by a new build of it: what is the same as before (a part of the same kind, size and place;
+        // the landscape and water by place alone) stays as it was on the map - no fade again; only what is new fades in
+        // (a house, water that came later)
         struct WasShown
         {
             std::uint32_t part;
@@ -570,7 +614,7 @@ namespace MapMesh
             const float box[6]{ a_mesh.minX, a_mesh.minY, a_mesh.minZ, a_mesh.maxX, a_mesh.maxY, a_mesh.maxZ };
             for (const auto& o : a_old) {
                 // part 0 holds the many small things together: kept as it was whatever changed in it
-                bool same = a_part == 0 ? o.part == 0 : o.part != 0 && o.kind == a_mesh.kind && o.triangles == a_mesh.triangles;
+                bool same = a_part == 0 ? o.part == 0 : o.part != 0 && o.kind == a_mesh.kind && (a_mesh.kind != kObjects || o.triangles == a_mesh.triangles);
                 for (int i = 0; same && a_part != 0 && i < 6; ++i) {
                     same = std::abs(o.box[i] - box[i]) < 2.0f;
                 }
@@ -593,8 +637,26 @@ namespace MapMesh
                     continue;
                 }
                 const auto old = ShownOf(id);
+                // the landscape or the water of the old build stays when the new one came without (a read that
+                // failed, a block hidden for a moment): never a hole in the ground
+                auto&         parts = it->second.parts;
+                std::uint32_t carried = 0x40000000;
+                for (const int kind : { kLand, kWater }) {
+                    if (std::ranges::any_of(parts, [&](const auto& a_p) { return a_p.second->kind == kind; })) {
+                        continue;
+                    }
+                    for (auto m = meshes.lower_bound(MeshKey(id, 0)); m != meshes.end() && m->second->cell == id;) {
+                        if (m->second->kind == kind) {
+                            parts[MeshKey(id, carried++)] = std::move(m->second);
+                            m = meshes.erase(m);
+                            ++perf.carried;
+                        } else {
+                            ++m;
+                        }
+                    }
+                }
                 DropMeshes(id);
-                for (auto& [key, part] : it->second.parts) {
+                for (auto& [key, part] : parts) {
                     part->lastSeen = tick;
                     Inherit(*part, static_cast<std::uint32_t>(key & 0xFFFFFFFF), old);
                     meshes[key] = std::move(part);
@@ -608,6 +670,9 @@ namespace MapMesh
         // cell's tree (persistent ones: big buildings, quest places) and the water planes go into the group of the cell
         // they stand in. Cells left behind stay in memory (back at once) until the triangle cap lets the oldest go
         constexpr std::uint64_t kRecheckTicks = 5;  // harvests between two checks of a cell that has not changed
+        constexpr int           kGoneHarvests = 30;       // a cell on the map that only lost shapes is built again once they stayed gone this long (10 s)
+        constexpr int           kUnsettledHarvests = 9;   // ...one whose set keeps changing: built anyway after this long (3 s)
+        constexpr std::uint64_t kRebuildTicks = 9;        // a cell is built again at most this often (3 s)
 
         constexpr RE::FormID ExteriorId(std::int32_t a_x, std::int32_t a_y)
         {
@@ -640,6 +705,8 @@ namespace MapMesh
             lastSignature.clear();
             unsettled.clear();
             lastCheck.clear();
+            shrinking.clear();
+            lastBuilt.clear();
         }
 
         // a_extra: a harvest only to go on building what the last one left over (next frame) - a cell's set is not
@@ -706,23 +773,25 @@ namespace MapMesh
                 if (a_shapes.empty()) {
                     return;  // not loaded yet (a cell at the edge of the loaded ones)
                 }
-                const auto sig = Signature(a_shapes);
+                auto       hashes = ShapeHashes(a_shapes);
+                const auto sig = Signature(hashes);
                 // a cell finishes loading over a few frames and some meshes flicker: a new set is built once it is seen
                 // twice in a row (so a cell fades in whole, not in pieces); one that never settles is built anyway
                 // after a few harvests
-                const bool settled = a_extra ? lastSignature[a_id] == sig : std::exchange(lastSignature[a_id], sig) == sig;
+                const bool                                         settled = a_extra ? lastSignature[a_id] == sig : std::exchange(lastSignature[a_id], sig) == sig;
+                bool                                               rebuild = false;  // a cell on the map built again (for the log: what changed)
+                std::vector<std::uint64_t>                         oldShapes;
+                std::vector<std::pair<std::uint64_t, std::string>> oldNames;
                 {
                     std::scoped_lock guard(meshLock);
                     const auto it = meshes.find(MeshKey(a_id, 0));
+                    const bool onMap = it != meshes.end();
                     auto&      wait = unsettled[a_id];
                     if (!a_extra) {
-                        wait = it == meshes.end() || it->second->signature != sig ? wait + 1 : 0;
+                        wait = !onMap || it->second->signature != sig ? wait + 1 : 0;
                     }
-                    // this very set is being rebuilt already: wait for it
-                    if (const auto st = staging.find(a_id); st != staging.end() && st->second.sig == sig) {
-                        return;
-                    }
-                    if (it != meshes.end() && it->second->signature == sig) {
+                    // the cell stays as it is on the map this time
+                    const auto keep = [&] {
                         for (auto p = it; p != meshes.end() && p->second->cell == a_id; ++p) {
                             p->second->lastSeen = tick;
                         }
@@ -731,12 +800,36 @@ namespace MapMesh
                                 job.lastSeen = tick;
                             }
                         }
+                    };
+                    // this very set is being rebuilt already: wait for it
+                    if (const auto st = staging.find(a_id); st != staging.end() && st->second.sig == sig) {
+                        keep();
                         return;
                     }
-                    if (!settled && wait < 3) {
-                        for (auto p = it; p != meshes.end() && p->second->cell == a_id; ++p) {
-                            p->second->lastSeen = tick;
+                    if (onMap && it->second->signature == sig) {
+                        shrinking.erase(a_id);
+                        keep();
+                        return;
+                    }
+                    if (onMap) {
+                        // a cell on the map: only lost shapes (nothing new) is most often something hidden for a moment
+                        // (faded out by distance, culled, a mod switching it) - the map stays as it is until they have
+                        // been gone a good while. Anything new: built again once it settled, never more often than
+                        // every few seconds (a cell whose set keeps changing does not rebuild over and over)
+                        const bool fewer = std::ranges::includes(it->second->shapes, hashes);
+                        auto&      shrink = shrinking[a_id];
+                        shrink = !fewer ? 0 : a_extra ? shrink : shrink + 1;
+                        const bool wanted = fewer ? shrink >= kGoneHarvests : settled || wait >= kUnsettledHarvests;
+                        if (!wanted || tick - lastBuilt[a_id] < kRebuildTicks) {
+                            keep();
+                            return;
                         }
+                        rebuild = true;
+                        if (Settings::Map().debugLog) {
+                            oldShapes = it->second->shapes;
+                            oldNames = it->second->names;
+                        }
+                    } else if (!settled && wait < 3) {
                         return;
                     }
                 }
@@ -744,11 +837,36 @@ namespace MapMesh
                     harvestAgain = true;  // enough for this frame: the rest on the next one
                     return;
                 }
+                if (rebuild && Settings::Map().debugLog) {
+                    // what came and what went, by name
+                    std::vector<std::uint64_t> added, gone;
+                    std::ranges::set_difference(hashes, oldShapes, std::back_inserter(added));
+                    std::ranges::set_difference(oldShapes, hashes, std::back_inserter(gone));
+                    const auto list = [&](const std::vector<std::uint64_t>& a_which, bool a_new) {
+                        std::string out;
+                        for (std::size_t i = 0; i < a_which.size() && i < 8; ++i) {
+                            std::string name = "?";
+                            if (a_new) {
+                                const auto s = std::ranges::find_if(a_shapes, [&](RE::BSTriShape* a_s) { return ShapeHash(a_s) == a_which[i]; });
+                                name = s != a_shapes.end() ? (*s)->name.c_str() : "?";
+                            } else if (const auto n = std::ranges::find_if(oldNames, [&](const auto& a_n) { return a_n.first == a_which[i]; }); n != oldNames.end()) {
+                                name = n->second;
+                            }
+                            out += (out.empty() ? "'" : ", '") + name + "'";
+                        }
+                        return a_which.size() > 8 ? out + ", ..." : out;
+                    };
+                    logger::info("map 3d: {} built again, {} harvests after the last build: {} new [{}], {} gone [{}]", a_what, tick - lastBuilt[a_id], added.size(),
+                        list(added, true), gone.size(), list(gone, false));
+                }
+                rebuild ? ++perf.rebuilds : ++perf.builds;
+                lastBuilt[a_id] = tick;
+                shrinking.erase(a_id);
                 std::vector<GpuJob> newJobs;
                 BuildStats          stats;
                 formatSwapped = 0;
                 strayTriangles = 0;
-                auto m = Build(a_id, a_space, a_shapes, newJobs, stats);
+                auto m = Build(a_id, a_space, a_shapes, std::move(hashes), newJobs, stats);
                 built += m->triangles + 1000;
                 m->lastSeen = tick;
                 logger::info("map 3d: {}: {} meshes - {} from the CPU copy ({} triangles), {} to read from the GPU, {} read in the other format than flagged; "
@@ -795,7 +913,15 @@ namespace MapMesh
                 std::unordered_set<RE::TESObjectREFR*> taken;
                 const auto outside = [&](RE::TESObjectREFR* a_ref) {
                     const auto root = a_ref ? a_ref->Get3D() : nullptr;
-                    if (!root || a_ref->IsDisabled() || !taken.insert(a_ref).second) {
+                    if (!root || a_ref->IsDisabled()) {
+                        return RE::BSContainer::ForEachResult::kContinue;
+                    }
+                    // first where it stands (cheap): most references are in cells not due this time
+                    const auto p = a_ref->GetPosition();
+                    const auto id = inside ? here->GetFormID() :
+                                             ExteriorId(static_cast<std::int32_t>(std::floor(p.x / kCellSize)), static_cast<std::int32_t>(std::floor(p.y / kCellSize)));
+                    const auto it = shapes.find(id);
+                    if (it == shapes.end() || !taken.insert(a_ref).second) {
                         return RE::BSContainer::ForEachResult::kContinue;
                     }
                     for (RE::NiAVObject* o = root; o; o = o->parent) {
@@ -803,12 +929,7 @@ namespace MapMesh
                             return RE::BSContainer::ForEachResult::kContinue;  // in a cell's tree: gathered with it
                         }
                     }
-                    const auto p = a_ref->GetPosition();
-                    const auto id = inside ? here->GetFormID() :
-                                             ExteriorId(static_cast<std::int32_t>(std::floor(p.x / kCellSize)), static_cast<std::int32_t>(std::floor(p.y / kCellSize)));
-                    if (const auto it = shapes.find(id); it != shapes.end()) {
-                        Collect(root, it->second, 0, a_ref);
-                    }
+                    Collect(root, it->second, 0, a_ref);
                     return RE::BSContainer::ForEachResult::kContinue;
                 };
                 // every loaded cell's list, not only the due ones: a reference listed in one cell may stand in its
@@ -1613,6 +1734,77 @@ float4 PS(VSOut i) : SV_Target
         };
     }
 
+    namespace
+    {
+        double MsSince(std::chrono::steady_clock::time_point a_from)
+        {
+            return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a_from).count();
+        }
+
+        // what a report needs to be read: the game, the mods that matter, the settings that cost
+        void LogEnvironment()
+        {
+            const auto  ini = RE::INISettingCollection::GetSingleton();
+            const auto  grids = ini ? ini->GetSetting("uGridsToLoad:General") : nullptr;
+            const auto  plugin = SKSE::PluginDeclaration::GetSingleton();
+            const auto& s = Settings::Map();
+            logger::info("diagnostics: Detailed MiniMap {}, Skyrim {}; Community Shaders {}, ENB {}; uGridsToLoad {}; {}x MSAA; minimap {:.0f} px, range {:.0f} / {:.0f} "
+                         "inside, tilt {:.0f}, style {}, roads {}, water {}, local map {}",
+                plugin ? plugin->GetVersion().string() : "?", REL::Module::get().version().string(), GetModuleHandleW(L"CommunityShaders.dll") ? "yes" : "no",
+                std::filesystem::exists("enbseries.ini") ? "yes" : "no", grids ? grids->GetUnsignedInteger() : 0u, r.samples, s.minimapSize, s.minimapRange,
+                s.minimapRangeInside, s.minimapTilt, s.look.style, s.look.roads, s.look.water, s.localMap);
+        }
+
+        // the detailed log: every 10 seconds what the map cost and did
+        void Report(float a_delta)
+        {
+            if (!Settings::Map().debugLog) {
+                perf.since = 0.0f;
+                return;
+            }
+            if (!perf.environment) {
+                perf.environment = true;
+                LogEnvironment();
+            }
+            perf.since += a_delta;
+            ++perf.frames;
+            if (perf.since < 10.0f) {
+                return;
+            }
+            std::size_t cells = 0, parts = 0, triangles = 0, waiting = 0;
+            {
+                std::scoped_lock guard(meshLock);
+                for (const auto& [key, m] : meshes) {
+                    ++parts;
+                    triangles += m->triangles;
+                    cells += (key & 0xFFFFFFFF) == 0 ? 1 : 0;
+                }
+                waiting = jobs.size() + inFlight.size();
+            }
+            const int   renders = perf.renders.exchange(0), redraws = perf.redraws.exchange(0);
+            const auto  renderUs = perf.renderUs.exchange(0), renderMaxUs = perf.renderMaxUs.exchange(0);
+            const float frames = static_cast<float>(std::max(perf.frames, 1));
+            logger::info("perf: {:.0f} s, {} frames ({:.0f} fps): minimap update {:.2f} ms a frame (max {:.2f}); harvests {}, {:.2f} ms each (max {:.2f}); "
+                         "pictures drawn in {} of {} frames, {:.2f} ms CPU each (max {:.2f}); cells built {}, built again {}, old land / water kept {}; "
+                         "in memory {} cells, {} parts, {}k triangles; GPU reads waiting {} ({} read, {} failed so far)",
+                perf.since, perf.frames, frames / perf.since, perf.mainMs / frames, perf.mainMax, perf.harvests, perf.harvests ? perf.harvestMs / perf.harvests : 0.0,
+                perf.harvestMax, redraws, renders, redraws ? renderUs / 1000.0 / redraws : 0.0, renderMaxUs / 1000.0, perf.builds, perf.rebuilds, perf.carried, cells,
+                parts, triangles / 1000, waiting, gpuRead, gpuFailed);
+            perf.since = 0.0f;
+            perf.frames = perf.harvests = perf.builds = perf.rebuilds = perf.carried = 0;
+            perf.mainMs = perf.mainMax = perf.harvestMs = perf.harvestMax = 0.0;
+        }
+    }
+
+    void NoteFrame(float a_ms)
+    {
+        perf.mainMs += a_ms;
+        perf.mainMax = std::max(perf.mainMax, static_cast<double>(a_ms));
+        if (a_ms > 8.0f) {
+            logger::info("perf: a slow minimap update, {:.1f} ms", a_ms);
+        }
+    }
+
     void Update(RE::PlayerCharacter* a_player, float a_delta, float a_radius)
     {
         // nothing on screen: no work at all; the map off (< 0): the memory goes too
@@ -1647,6 +1839,8 @@ float4 PS(VSOut i) : SV_Target
         const bool  extra = std::exchange(harvestAgain, false);
         const float scan = a_radius * 1.25f + kCellSize * 0.5f;
         if (regular || extra) {
+            const auto start = std::chrono::steady_clock::now();
+            const auto before = perf.builds + perf.rebuilds;
             Harvest(a_player, space, scan, !regular);
             if (regular) {
                 sinceHarvest = 0.0f;
@@ -1654,9 +1848,17 @@ float4 PS(VSOut i) : SV_Target
                     HarvestRoads(a_player, space, scan);
                 }
             }
+            const double ms = MsSince(start);
+            ++perf.harvests;
+            perf.harvestMs += ms;
+            perf.harvestMax = std::max(perf.harvestMax, ms);
+            if (ms > 6.0) {
+                logger::info("perf: a slow harvest, {:.1f} ms ({} cells built in it{})", ms, perf.builds + perf.rebuilds - before, extra ? ", a continued one" : "");
+            }
         }
         PublishRoadMesh(space, s.look.roads && outdoors);
         mapSpace = space;
+        Report(a_delta);
     }
 
     RE::FormID CurrentSpace()
@@ -1683,6 +1885,7 @@ float4 PS(VSOut i) : SV_Target
         if (!r.ready) {
             return nullptr;
         }
+        const auto renderStart = std::chrono::steady_clock::now();
         auto& t = r.target;
         if (!EnsureTarget(device, t, a_view.width, a_view.height)) {
             return nullptr;
@@ -1773,6 +1976,7 @@ float4 PS(VSOut i) : SV_Target
             }
         }
         if (t.drawn && t.lastSettled && settled && sig == t.lastSig && key == t.lastKey) {
+            ++perf.renders;
             return t.srv;
         }
         t.lastKey = std::move(key);
@@ -1903,6 +2107,12 @@ float4 PS(VSOut i) : SV_Target
         }
         backup.Restore(context);
         t.drawn = true;
+        const auto us = static_cast<std::int64_t>(MsSince(renderStart) * 1000.0);
+        ++perf.renders;
+        ++perf.redraws;
+        perf.renderUs += us;
+        for (auto most = perf.renderMaxUs.load(); us > most && !perf.renderMaxUs.compare_exchange_weak(most, us);) {
+        }
         return t.srv;
     }
 }

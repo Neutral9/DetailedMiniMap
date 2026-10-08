@@ -3,10 +3,12 @@
 An SKSE plugin for Skyrim Special Edition / Anniversary Edition: a detailed 3D minimap in the HUD, built from the game's own meshes.
 
 - Real geometry of the loaded cells: ground, houses, stairs, rocks, furniture, water, roads (from the navmesh).
-- Tilted view that turns with the camera (or stays north-up), square or round.
+- Tilted view that turns with the camera (or stays north-up), square or round, in any corner of the screen at any offset.
+- Replaces the game's local map (in the map menu) with a large version of the same map: drag with the mouse, zoom with the wheel.
 - Cutaway: inside, what is above the character's head is removed; everywhere, what covers the character on the map.
 - Two styles: colour (all colours configurable) and vanilla (the game's local map palette and frame).
-- Icons for enemies, guards, residents, followers, animals, doors, food, potions, chests, weapons, armour, loot; each kind can be switched off. Merchants' hidden chests are left out.
+- Icons for enemies, guards, residents, followers, animals, doors, food, potions, chests, weapons, armour, loot, plants to pick, dead bodies (until you have looked into them) and quest targets (on the rim when off the map); each kind can be switched off. Merchants' hidden chests are left out.
+- A beam from the character to the nearest quest target, shown and hidden by its own key.
 - A key shows / hides the minimap with a fade.
 - Settings menu in nine languages (Russian, English, French, Italian, German, Spanish, Polish, Chinese (traditional), Japanese); the texts are plain files in `SKSE/Plugins/DetailedMiniMap/Translations`.
 
@@ -28,12 +30,15 @@ Why it barely costs FPS:
 - Only what falls inside the minimap is drawn; objects smaller than a pixel are skipped.
 - If the player and camera are still and nothing is fading in, the frame is not redrawn: the last image is reused.
 - The shaders compile on a background thread while you are still in the main menu.
-- When the minimap is hidden with its key, it does no work.
+- When the minimap is hidden with its key, nothing is drawn (with the local map replacement on, the loaded cells are still read, cheaply, so the map menu has them).
+- A cell is rebuilt only when something new appears in it; shapes that vanish for a moment (faded out, culled) do not make it rebuild, and the landscape of a cell is never dropped by a failed read.
 - No disk cache, no hooks into the game's renderer: its own texture and one image in the HUD.
 
 ## Settings
 
 `SKSE/Plugins/DetailedMiniMap.ini` holds the defaults; the in-game menu (SKSE Menu Framework → Detailed MiniMap) saves into `DetailedMiniMap_User.ini`, which overrides it key by key.
+
+For stutter or flicker reports: turn on the detailed log (menu → Diagnostics, or `DebugLog=1`). `DetailedMiniMap.log` then gets every 10 seconds what the map cost (update, harvest and drawing times), which cells were built again and which shapes came or went, plus the game version, Community Shaders / ENB, uGridsToLoad.
 
 ## Building
 

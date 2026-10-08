@@ -10,6 +10,17 @@ namespace Settings
     namespace
     {
         MapSettings map;
+        static_assert(std::tuple_size_v<decltype(MapSettings::show)> == Icons::kCount);
+
+        // warnings only, or (the detailed log on) everything, written out every few seconds
+        void ApplyLog()
+        {
+            const auto log = spdlog::default_logger();
+            if (!log) {
+                return;
+            }
+            log->set_level(map.debugLog ? spdlog::level::info : spdlog::level::warn);
+        }
 
         std::string IniPath(const char* a_name)
         {
@@ -93,6 +104,9 @@ namespace Settings
             a_f("Map", "NorthUp", m.northUp);
             a_f("Map", "MinimapRound", m.minimapRound);
             a_f("Map", "MinimapCorner", m.minimapCorner, 0.0f, 150.0f);
+            a_f("Map", "Anchor", m.anchor, 0, 3);
+            a_f("Map", "OffsetX", m.offsetX, 0.0f, 2000.0f);
+            a_f("Map", "OffsetY", m.offsetY, 0.0f, 2000.0f);
             a_f("Map", "IconSize", m.iconSize, 0.4f, 3.0f);
             a_f("Map", "IconFadeIn", m.iconFadeIn, 0.0f, 3.0f);
             a_f("Map", "IconFadeOut", m.iconFadeOut, 0.0f, 3.0f);
@@ -102,6 +116,10 @@ namespace Settings
             }
             a_f("Map", "Cut", m.cut);
             a_f("Map", "CutHeight", m.cutHeight, 80.0f, 2000.0f);
+            a_f("Map", "QuestBeam", m.questBeam);
+            a_f("Map", "BeamKey", m.beamKey);
+            a_f("Map", "LocalMap", m.localMap);
+            a_f("Map", "DebugLog", m.debugLog);
 
             auto& l = m.look;
             a_f("MapLook", "Grid", l.grid);
@@ -138,11 +156,13 @@ namespace Settings
     void Load()
     {
         Each(Reader{});
+        ApplyLog();
     }
 
     void Save()
     {
         Each(Writer{});
+        ApplyLog();
     }
 
     std::string KeyName(std::uint32_t a_key)

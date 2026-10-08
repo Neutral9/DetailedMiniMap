@@ -24,6 +24,9 @@ namespace Icons
         kWeapon,
         kArmor,
         kLoot,
+        kQuest,     // a quest target (on the rim when off the map)
+        kBody,      // a dead body not looked into yet
+        kFlora,     // a plant to pick (not picked yet)
         kTotal
     };
     inline constexpr std::size_t kCount = static_cast<std::size_t>(Kind::kTotal);

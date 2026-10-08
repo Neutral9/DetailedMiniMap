@@ -83,6 +83,7 @@ namespace Menu
             }
             Check(Lang::L(S::Enabled).c_str(), m.enabled);
             KeyButton(Lang::T(S::ToggleKey), m.toggleKey, "toggle");
+            Check(Lang::L(S::LocalMap).c_str(), m.localMap);
 
             ImGui::SeparatorText(Lang::T(S::SecMinimap));
             {
@@ -102,6 +103,16 @@ namespace Menu
             Slider(S::RangeInside, m.minimapRangeInside, 300.0f, 12000.0f, "%.0f", true);
             Slider(S::Tilt, m.minimapTilt, 20.0f, 90.0f, "%.0f");
 
+            ImGui::SeparatorText(Lang::T(S::SecPosition));
+            {
+                const char* corners[] = { Lang::T(S::TopLeft), Lang::T(S::TopRight), Lang::T(S::BottomLeft), Lang::T(S::BottomRight) };
+                if (ImGui::Combo(Lang::L(S::Anchor).c_str(), &m.anchor, corners, 4)) {
+                    Settings::Save();
+                }
+            }
+            Slider(S::OffsetX, m.offsetX, 0.0f, 1500.0f, "%.0f");
+            Slider(S::OffsetY, m.offsetY, 0.0f, 1000.0f, "%.0f");
+
             ImGui::SeparatorText(Lang::T(S::SecIcons));
             Slider(S::IconSize, m.iconSize, 0.4f, 3.0f, "%.2f");
             Slider(S::IconFadeIn, m.iconFadeIn, 0.0f, 3.0f, m.iconFadeIn > 0.0f ? "%.2f" : Lang::T(S::AtOnce));
@@ -120,6 +131,13 @@ namespace Menu
             ImGui::SeparatorText(Lang::T(S::SecCut));
             Check(Lang::L(S::CutCover).c_str(), m.cut);
             Slider(S::CutHeight, m.cutHeight, 80.0f, 1000.0f, "%.0f");
+
+            ImGui::SeparatorText(Lang::T(S::SecQuests));
+            Check(Lang::L(S::QuestBeam).c_str(), m.questBeam);
+            KeyButton(Lang::T(S::BeamKey), m.beamKey, "beam");
+
+            ImGui::SeparatorText(Lang::T(S::SecDebug));
+            Check(Lang::L(S::DebugLog).c_str(), m.debugLog);
         }
 
         void __stdcall RenderLook()

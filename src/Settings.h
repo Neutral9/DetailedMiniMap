@@ -16,13 +16,22 @@ namespace Settings
         bool          northUp = false;       // the minimap keeps north up instead of turning with the camera
         bool          minimapRound = true;   // a round minimap instead of the square
         float         minimapCorner = 40.0f; // the square minimap: its corners rounded this far (px at 1080p; 0 = sharp)
+        int           anchor = 1;            // the screen corner the minimap sits in: 0 top left, 1 top right, 2 bottom left, 3 bottom right
+        float         offsetX = 18.0f;       // ...this far from that corner (px at 1080p)
+        float         offsetY = 18.0f;
         // icons
         float         iconSize = 1.0f;       // scale of every icon
         float         iconFadeIn = 0.35f;    // seconds an icon takes to show up
         float         iconFadeOut = 0.35f;   // ...and to go once its thing is gone (picked up, dead, out of range)
-        std::array<bool, 12> show{ true, true, true, true, true, true, true, true, true, true, true, true };  // per icon kind (Icons::Kind order); the menu toggles them
+        std::array<bool, 15> show{ true, true, true, true, true, true, true, true, true, true, true, true, true, true, true };  // per icon kind (Icons::Kind order); the menu toggles them
         bool          cut = true;            // cut away what is over the character (roofs, ceilings)
         float         cutHeight = 80.0f;     // inside: geometry this far over the feet is cut away (roofs, ceilings)
+        // quests
+        bool          questBeam = true;      // a beam from the character to the nearest quest target
+        std::uint32_t beamKey = 48;          // its key (48 = B; 0 = none): the beam shown / hidden
+        // the game's local map (in the map menu) replaced by this one: dragged with the mouse, zoomed with the wheel
+        bool          localMap = true;
+        bool          debugLog = false;      // a detailed log (timings, rebuilds, the reasons) in DetailedMiniMap.log
         // the look (the menu's second page; {} = the defaults)
         struct Look
         {

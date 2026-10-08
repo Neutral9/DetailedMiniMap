@@ -1,15 +1,18 @@
 #pragma once
 
-// What the HUD shows of the 3D map (MapMesh): the minimap square in the top right corner (tilted, turning with the
-// camera or north up, or round), shown and hidden by its key with a fade. Markers on it: enemies, followers, load
-// doors, containers, items.
+// What the HUD shows of the 3D map (MapMesh): the minimap in a corner of the screen (tilted, turning with the camera
+// or north up, square or round), shown and hidden by its key with a fade; and, in the map menu, the game's local map
+// replaced by a large one (dragged with the mouse, zoomed with the wheel). Markers on them: characters, bodies, load
+// doors, containers, items, plants, quest targets (on the rim when past it) and a beam to the nearest quest target.
 namespace MiniMap
 {
-    void Register();  // HUD element, after the Menu Framework is up
-    void Install();   // hook: the per-frame update
+    void Register();  // HUD element and event sinks, after the Menu Framework is up
+    void Install();   // hooks: the per-frame updates (the HUD, the map menu)
 
     // the menu's "press a key" button: the next keyboard press is written into a_slot (a key setting)
     void StartCapture(std::uint32_t* a_slot);
     bool IsCapturing(const std::uint32_t* a_slot = nullptr);
     bool OnFrameworkInput(RE::InputEvent* a_event);  // from SKSE Menu Framework; true = swallow the event
+
+    void OnGameLoaded();  // a save loaded or a new game: the bodies looked into are forgotten (their ids mean others now)
 }

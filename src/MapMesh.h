@@ -36,4 +36,7 @@ namespace MapMesh
     void* Render(const View& a_view);  // render thread: the picture as an ImTextureID, nullptr if not ready
 
     RE::FormID CurrentSpace();  // main thread
+
+    // main thread, the detailed log: what the minimap's whole update took this frame (ms)
+    void NoteFrame(float a_ms);
 }

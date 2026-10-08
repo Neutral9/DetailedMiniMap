@@ -27,6 +27,9 @@ public class MakeIcons {
         new Icon("weapon", 0, 200, 210, 225),
         new Icon("armor", 0xF3ED, 140, 180, 220),
         new Icon("loot", 0xF51E, 245, 210, 90),
+        new Icon("quest", 0x21, 255, 200, 60),
+        new Icon("body", 0xF714, 175, 170, 160),
+        new Icon("flora", 0xF06C, 120, 200, 90),
         new Icon("player", 0xF007, 255, 210, 90),  // the character (drawn upright; the map adds a pointer on its rim)
     };
     static final int S = 128;

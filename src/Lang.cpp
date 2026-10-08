@@ -14,7 +14,8 @@ namespace Lang
             "CutHeight", "Style", "StyleColour", "StyleVanilla", "SecGround", "GroundColor", "GroundBrightness", "GroundOpacity", "Grid", "GridStep", "Contours", "ContourStep",
             "LineBrightness", "SecGeometry", "GeometryColor", "GeometryBrightness", "GeometryOpacity", "SecRoadsWater", "Roads", "RoadColor", "RoadWidth", "Water", "WaterColor",
             "SecOther", "DepthShade", "FadeTime", "ResetLook", "TabMap", "TabLook", "Enemies", "Guards", "Residents", "Followers", "Animals", "Doors", "Food", "Potions",
-            "Chests", "Weapons", "Armor", "Loot" };
+            "Chests", "Weapons", "Armor", "Loot", "Quests", "Bodies", "Plants", "SecPosition", "Anchor", "TopLeft", "TopRight", "BottomLeft", "BottomRight",
+            "OffsetX", "OffsetY", "SecQuests", "QuestBeam", "BeamKey", "LocalMap", "SecDebug", "DebugLog" };
 
         // Data/SKSE/Plugins/DetailedMiniMap/Translations/<code>.txt, in the order of the Language setting
         constexpr const char* kCodes[kLanguages] = { "ru", "en", "fr", "it", "de", "es", "pl", "zh", "ja" };

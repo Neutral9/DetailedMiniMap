@@ -34,6 +34,9 @@ namespace Icons
             { "weapon", 0, 200, 210, 225 },
             { "armor", 0xF3ED, 140, 180, 220 },
             { "loot", 0xF51E, 245, 210, 90 },
+            { "quest", 0x21, 255, 200, 60 },
+            { "body", 0xF714, 175, 170, 160 },
+            { "flora", 0xF06C, 120, 200, 90 },
         };
         static_assert(std::size(kStyles) == kCount);
 

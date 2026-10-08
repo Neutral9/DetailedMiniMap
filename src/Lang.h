@@ -72,6 +72,24 @@ namespace Lang
         Weapons,
         Armor,
         Loot,
+        Quests,
+        Bodies,
+        Plants,
+        // added later
+        SecPosition,
+        Anchor,
+        TopLeft,
+        TopRight,
+        BottomLeft,
+        BottomRight,
+        OffsetX,
+        OffsetY,
+        SecQuests,
+        QuestBeam,
+        BeamKey,
+        LocalMap,
+        SecDebug,
+        DebugLog,
         kCount
     };
 
