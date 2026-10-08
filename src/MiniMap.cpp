@@ -56,11 +56,37 @@ namespace MiniMap
             return !stack.empty() && stack.back() == RE::UserEvents::INPUT_CONTEXT_ID::kGameplay;
         }
 
-        // the HUD is up: not paused, not loading, not hidden (by a menu, a scene, the console's tm)
+        // a menu over the HUD: any open one that is not a part of it. Not just "the game paused": SkyrimSouls RE (and the
+        // like) keep the game running under their menus, so a menu is told by its kind - the flags a menu of its own has
+        // (a cursor, the menu controls, modal...), or the name of one of the game's whose pause flag such a mod takes off
+        std::atomic_bool menuOver = false;  // main thread writes, the HUD element reads
+
+        bool MenuOver()
+        {
+            using Flag = RE::UI_MENU_FLAGS;
+            const auto ui = RE::UI::GetSingleton();
+            if (!ui) {
+                return true;
+            }
+            for (const auto& menu : ui->menuStack) {
+                if (menu && menu->menuFlags.any(Flag::kPausesGame, Flag::kUsesCursor, Flag::kUsesMenuContext, Flag::kModal, Flag::kUpdateUsesCursor, Flag::kInventoryItemMenu,
+                                Flag::kApplicationMenu, Flag::kFreezeFrameBackground, Flag::kDisablePauseMenu)) {
+                    return true;
+                }
+            }
+            static constexpr std::string_view kMenus[] = { "Book Menu", "Lockpicking Menu", "Sleep/Wait Menu", "Training Menu", "Tutorial Menu", "MessageBoxMenu", "Console",
+                "Dialogue Menu", "MapMenu", "LevelUp Menu", "StatsMenu", "Journal Menu", "TweenMenu", "Loading Menu", "Main Menu", "RaceSex Menu", "Crafting Menu",
+                "InventoryMenu", "ContainerMenu", "BarterMenu", "GiftMenu", "MagicMenu", "FavoritesMenu", "Mod Manager Menu", "Creation Club Menu", "Quantity Menu",
+                "Credits Menu", "CustomMenu" };
+            return std::ranges::any_of(kMenus, [&](std::string_view a_name) { return ui->IsMenuOpen(a_name); });
+        }
+
+        // the HUD is up: no menu over it, not loading, not hidden (by a scene, the console's tm)
         bool HudShown()
         {
             const auto ui = RE::UI::GetSingleton();
-            return ui && !ui->GameIsPaused() && ui->IsShowingMenus() && ui->IsMenuOpen(RE::HUDMenu::MENU_NAME) &&
+            menuOver = MenuOver();
+            return ui && !ui->GameIsPaused() && !menuOver && ui->IsShowingMenus() && ui->IsMenuOpen(RE::HUDMenu::MENU_NAME) &&
                    !ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME);
         }
 
@@ -1402,7 +1428,7 @@ namespace MiniMap
                 DrawHoverName(dl, f, k);
                 return;
             }
-            if (ui->GameIsPaused() || !ui->IsShowingMenus()) {
+            if (ui->GameIsPaused() || menuOver || !ui->IsShowingMenus()) {
                 return;
             }
             if (f.has) {
