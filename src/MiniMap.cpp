@@ -645,10 +645,36 @@ namespace MiniMap
             bool         open = false;
             RE::NiPoint3 centre;
             float        range = 0.0f;  // world units from the centre to the top edge
-            float        lastX = 0.0f, lastY = 0.0f;
-            bool         wasHeld = false;
+            float        lastX = 0.0f, lastY = 0.0f;  // the cursor last frame
+            // the mouse's own movement to cursor pixels, per axis (sign and speed), learned while the cursor moves
+            // freely: dragging goes by the mouse, not by the cursor (the menu holds or clamps it meanwhile)
+            float        gainX = 1.0f, gainY = 1.0f;
+            std::chrono::steady_clock::time_point last;   // the last update (the game is paused: its clock stands)
         };
         Local local;
+        float rawX = 0.0f, rawY = 0.0f;  // main thread: the mouse's movement since the last map update
+        // keys moving the local map, held: W A S D and the arrows
+        std::array<bool, 4> panKeys{};    // up, left, down, right
+
+        int PanKey(std::uint32_t a_key)
+        {
+            switch (a_key) {
+            case 17:
+            case 200:
+                return 0;
+            case 30:
+            case 203:
+                return 1;
+            case 31:
+            case 208:
+                return 2;
+            case 32:
+            case 205:
+                return 3;
+            default:
+                return -1;
+            }
+        }
 
         // the menu's cursor in screen pixels
         std::pair<float, float> Cursor(float a_w, float a_h)
@@ -663,13 +689,13 @@ namespace MiniMap
             return { c.cursorPosX * sx, c.cursorPosY * sy };
         }
 
-        // the local map's picture on the screen: most of it, the menu's bottom bar left free
+        // the local map's picture on the screen: all of it over the menu's bottom bar (where the game's own is)
         void LocalRect(float a_w, float a_h, float& a_x0, float& a_y0, float& a_x1, float& a_y1)
         {
-            a_x0 = a_w * 0.04f;
-            a_x1 = a_w * 0.96f;
-            a_y0 = a_h * 0.07f;
-            a_y1 = a_h * 0.86f;
+            a_x0 = 0.0f;
+            a_x1 = a_w;
+            a_y0 = 0.0f;
+            a_y1 = std::round(a_h * 0.866f);
         }
 
         std::string PlaceName(RE::PlayerCharacter* a_player)
@@ -723,8 +749,8 @@ namespace MiniMap
                 });
             auto view = MeshView(a_world, W, H);
             o.Fill(view);
-            view.range = 1.0e9f;  // everything loaded that falls on the picture
-            SetOccluder(view, a_world);
+            view.range = 1.0e9f;  // everything loaded that falls on the picture (no occlusion cut round the character)
+            view.slot = 1;
             f.view = view;
             std::tie(f.cursorX, f.cursorY) = Cursor(a_w, a_h);
             f.title = PlaceName(a_player);
@@ -754,38 +780,71 @@ namespace MiniMap
             }
             const bool inside = player->GetParentCell()->IsInteriorCell();
             const auto [cx, cy] = Cursor(w, h);
-            const bool opened = !local.open;
-            if (opened) {
+            const auto now = std::chrono::steady_clock::now();
+            if (!local.open) {
                 // opened: on the character, as wide as the minimap shows twice
                 local.open = true;
                 local.centre = player->GetPosition();
                 local.range = std::clamp(MinimapRange(inside) * 2.0f, 600.0f, 16000.0f);
-                local.wasHeld = false;
+                local.lastX = cx;
+                local.lastY = cy;
+                local.last = now;
                 wheel = 0;
+                rawX = rawY = 0.0f;
+                panKeys = {};
                 markerRange = inside ? std::max(MinimapReach(true) * 4.0f, 6000.0f) : kLocalReach;
                 GatherStatics(player);
                 GatherQuests(player);
                 logger::info("local map: opened at {:.0f} {:.0f}, cursor {:.0f} {:.0f} on a {:.0f} x {:.0f} screen", local.centre.x, local.centre.y, cx, cy, w, h);
             }
-            // the wheel zooms (up: in), dragging moves the map along
-            if (wheel != 0) {
-                local.range = std::clamp(local.range * std::pow(0.85f, static_cast<float>(wheel)), 300.0f, 20000.0f);
-                wheel = 0;
-            }
+            const float dt = std::clamp(std::chrono::duration<float>(now - local.last).count(), 0.0f, 0.1f);
+            local.last = now;
             float x0, y0, x1, y1;
             LocalRect(w, h, x0, y0, x1, y1);
-            const float scale = (y1 - y0) * 0.5f / local.range;
             const float st = std::max(std::sin(s.minimapTilt * kDeg), 0.3f);
-            if (mouseHeld && local.wasHeld) {
-                local.centre.x -= (cx - local.lastX) / scale;
-                local.centre.y += (cy - local.lastY) / (scale * st);
+            // the wheel zooms (up: in) towards the cursor: the point under it stays where it is
+            if (wheel != 0) {
+                const float before = (y1 - y0) * 0.5f / local.range;
+                local.range = std::clamp(local.range * std::pow(0.85f, static_cast<float>(wheel)), 300.0f, 20000.0f);
+                const float after = (y1 - y0) * 0.5f / local.range;
+                if (cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1) {
+                    const float ox = cx - (x0 + x1) * 0.5f, oy = cy - (y0 + y1) * 0.5f;
+                    local.centre.x += ox / before - ox / after;
+                    local.centre.y -= (oy / before - oy / after) / st;
+                }
+                wheel = 0;
+            }
+            const float scale = (y1 - y0) * 0.5f / local.range;
+            // the mouse's movement in cursor pixels: learned from frames the cursor follows it freely
+            const float cdx = cx - local.lastX, cdy = cy - local.lastY;
+            const bool  free = !mouseHeld && cx > 2.0f && cx < w - 2.0f && cy > 2.0f && cy < h - 2.0f;
+            const auto  learn = [&](float& a_gain, float a_cursor, float a_raw) {
+                if (free && std::abs(a_raw) >= 2.0f && std::abs(a_cursor) >= 1.0f) {
+                    const float g = std::clamp(a_cursor / a_raw, -10.0f, 10.0f);
+                    a_gain = std::abs(g) >= 0.05f ? a_gain * 0.8f + g * 0.2f : a_gain;
+                }
+            };
+            learn(local.gainX, cdx, rawX);
+            learn(local.gainY, cdy, rawY);
+            // dragging moves the map with the mouse; the keys move it a screen's half a second
+            float dx = 0.0f, dy = 0.0f;
+            if (mouseHeld) {
+                dx += rawX * local.gainX;
+                dy += rawY * local.gainY;
+            }
+            const float keyStep = (y1 - y0) * 0.9f * dt;
+            dx += (panKeys[1] ? keyStep : 0.0f) - (panKeys[3] ? keyStep : 0.0f);
+            dy += (panKeys[0] ? keyStep : 0.0f) - (panKeys[2] ? keyStep : 0.0f);
+            if (dx != 0.0f || dy != 0.0f) {
+                local.centre.x -= dx / scale;
+                local.centre.y += dy / (scale * st);
                 // never farther from the character than the loaded world reaches
                 const auto  p = player->GetPosition();
                 const float reach = inside ? 20000.0f : kLocalReach;
                 local.centre.x = std::clamp(local.centre.x, p.x - reach, p.x + reach);
                 local.centre.y = std::clamp(local.centre.y, p.y - reach, p.y + reach);
             }
-            local.wasHeld = mouseHeld;
+            rawX = rawY = 0.0f;
             local.lastX = cx;
             local.lastY = cy;
             const auto world = TakeWorld(player, true);
@@ -967,28 +1026,30 @@ namespace MiniMap
             }
         }
 
-        // the local map: a dark backdrop over the game's own (its bottom bar left free), the picture in a frame, the
-        // place's name over it, and the cursor (the menu's own is under all this)
-        void DrawLocal(ImGui::ImDrawList* a_dl, const Frame& a_f, float a_w, float a_k)
+        // the local map: the picture over the game's own (its bottom bar left free) in a frame, the place's name on it,
+        // and the cursor (the menu's own is under all this)
+        void DrawLocal(ImGui::ImDrawList* a_dl, const Frame& a_f, float a_k)
         {
             using V2 = ImGui::ImVec2;
             namespace D = ImGui::ImDrawListManager;
             const bool  vanilla = Settings::Map().look.style == 1;
-            const float bottom = a_f.my1 + 10.0f * a_k;
-            D::AddRectFilled(a_dl, V2{ 0.0f, 0.0f }, V2{ a_w, bottom }, vanilla ? Rgb(12, 11, 10, 248) : Rgb(7, 9, 14, 248), 0.0f, 0);
-            D::AddRectFilled(a_dl, V2{ a_f.mx0, a_f.my0 }, V2{ a_f.mx1, a_f.my1 }, vanilla ? Rgb(20, 19, 16) : Rgb(10, 12, 18), 0.0f, 0);
+            const float a = a_f.alpha;
+            const float bottom = a_f.my1;
+            D::AddRectFilled(a_dl, V2{ a_f.mx0, a_f.my0 }, V2{ a_f.mx1, a_f.my1 }, Faded(vanilla ? Rgb(20, 19, 16) : Rgb(10, 12, 18), a), 0.0f, 0);
             D::PushClipRect(a_dl, V2{ a_f.mx0, a_f.my0 }, V2{ a_f.mx1, a_f.my1 }, true);
             if (a_f.view) {
                 if (const auto tex = MapMesh::Render(*a_f.view)) {
-                    D::AddImage(a_dl, tex, V2{ a_f.mx0, a_f.my0 }, V2{ a_f.mx1, a_f.my1 }, V2{ 0.0f, 0.0f }, V2{ 1.0f, 1.0f }, Rgb(255, 255, 255));
+                    D::AddImage(a_dl, tex, V2{ a_f.mx0, a_f.my0 }, V2{ a_f.mx1, a_f.my1 }, V2{ 0.0f, 0.0f }, V2{ 1.0f, 1.0f }, Faded(Rgb(255, 255, 255), a));
                 }
             }
             DrawMarkers(a_dl, a_f, a_k);
             D::PopClipRect(a_dl);
+            // the frame just inside the picture's edges (it fills the screen)
+            const float in = 6.0f * a_k;
             if (vanilla) {
-                DrawVanillaFrame(a_dl, a_f.mx0, a_f.my0, a_f.mx1, a_f.my1, 0.0f, false, a_k, 1.0f);
+                DrawVanillaFrame(a_dl, a_f.mx0 + in, a_f.my0 + in, a_f.mx1 - in, a_f.my1 - in, 0.0f, false, a_k, a);
             } else {
-                D::AddRect(a_dl, V2{ a_f.mx0, a_f.my0 }, V2{ a_f.mx1, a_f.my1 }, Rgb(150, 120, 75), 0.0f, 0, 1.5f * a_k);
+                D::AddRect(a_dl, V2{ a_f.mx0 + in, a_f.my0 + in }, V2{ a_f.mx1 - in, a_f.my1 - in }, Faded(Rgb(150, 120, 75), a), 0.0f, 0, 1.5f * a_k);
             }
             if (!a_f.title.empty()) {
                 if (const auto font = ImGui::GetFont()) {
@@ -996,14 +1057,14 @@ namespace MiniMap
                     const float size = 30.0f * a_k;
                     const auto  ts = ImGui::CalcTextSize(a_f.title.c_str());
                     const float kk = base > 0.0f ? size / base : 1.0f;
-                    const V2    at{ (a_f.mx0 + a_f.mx1) * 0.5f - ts.x * kk * 0.5f, (a_f.my0 - ts.y * kk) * 0.5f };
-                    D::AddText(a_dl, font, size, V2{ at.x + 2.0f * a_k, at.y + 2.0f * a_k }, Rgb(0, 0, 0, 200), a_f.title.c_str());
-                    D::AddText(a_dl, font, size, at, vanilla ? Rgb(226, 222, 210) : Rgb(220, 225, 235), a_f.title.c_str());
+                    const V2    at{ (a_f.mx0 + a_f.mx1) * 0.5f - ts.x * kk * 0.5f, a_f.my0 + 18.0f * a_k };
+                    D::AddText(a_dl, font, size, V2{ at.x + 2.0f * a_k, at.y + 2.0f * a_k }, Faded(Rgb(0, 0, 0, 220), a), a_f.title.c_str());
+                    D::AddText(a_dl, font, size, at, Faded(vanilla ? Rgb(236, 232, 220) : Rgb(225, 230, 240), a), a_f.title.c_str());
                 }
             }
             // the cursor, while it is over what covers the menu's own
             const float x = a_f.cursorX, y = a_f.cursorY;
-            if (x >= 0.0f && y >= 0.0f && y < bottom) {
+            if (x >= 0.0f && y >= 0.0f && y < bottom && a >= 1.0f) {
                 const float s = 22.0f * a_k;
                 const V2    tip{ x, y }, left{ x, y + s }, right{ x + s * 0.72f, y + s * 0.72f };
                 D::AddTriangleFilled(a_dl, tip, left, right, Rgb(235, 230, 215));
@@ -1029,11 +1090,28 @@ namespace MiniMap
                 std::scoped_lock lock(frameLock);
                 f = ui->IsMenuOpen(RE::MapMenu::MENU_NAME) && localFrame.has ? localFrame : frame;
             }
+            // the local map: while it is up; once closed (or the world map chosen) its last picture fades out over the
+            // game's own as that one goes, so the game's never shows through
+            static Frame                                 fading;
+            static std::chrono::steady_clock::time_point goneAt;
+            constexpr float                              kLocalFade = 0.4f;
             if (f.has && f.local) {
+                fading = f;
+                fading.cursorX = -1.0f;
+                goneAt = std::chrono::steady_clock::now();
                 if (ui->IsShowingMenus()) {
-                    DrawLocal(dl, f, io->DisplaySize.x, k);
+                    DrawLocal(dl, f, k);
                 }
                 return;
+            }
+            if (fading.has) {
+                const float t = std::chrono::duration<float>(std::chrono::steady_clock::now() - goneAt).count() / kLocalFade;
+                if (t >= 1.0f) {
+                    fading = {};
+                } else {
+                    fading.alpha = 1.0f - t * t;
+                    DrawLocal(dl, fading, k);
+                }
             }
             if (ui->GameIsPaused() || !ui->IsShowingMenus()) {
                 return;
@@ -1082,9 +1160,19 @@ namespace MiniMap
             {
                 auto& s = Settings::Map();
                 for (auto event = a_event ? *a_event : nullptr; event; event = event->next) {
+                    if (const auto move = event->AsMouseMoveEvent(); move && local.open) {
+                        rawX += static_cast<float>(move->mouseInputX);
+                        rawY += static_cast<float>(move->mouseInputY);
+                        continue;
+                    }
                     const auto button = event->AsButtonEvent();
                     if (!button) {
                         continue;
+                    }
+                    if (button->GetDevice() == RE::INPUT_DEVICE::kKeyboard) {
+                        if (const int pan = PanKey(button->GetIDCode()); pan >= 0) {
+                            panKeys[pan] = local.open && button->IsPressed();
+                        }
                     }
                     if (button->GetDevice() == RE::INPUT_DEVICE::kMouse) {
                         using Mouse = RE::BSWin32MouseDevice::Key;

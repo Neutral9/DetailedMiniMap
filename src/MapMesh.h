@@ -20,6 +20,7 @@ namespace MapMesh
     struct View
     {
         int          width = 0, height = 0;
+        int          slot = 0;         // which picture: 0 the minimap, 1 the local map (each its own texture)
         float        rows[4][4]{};  // world point -> clip space
         RE::NiPoint3 player;
         float        cut = 250.0f;     // geometry this far above the character's feet is cut away

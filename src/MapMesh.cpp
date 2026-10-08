@@ -1509,7 +1509,7 @@ float4 PS(VSOut i) : SV_Target
             ID3D11Buffer*            roadVb = nullptr;     // every road triangle of the world space shown
             UINT                     roadCorners = 0;
             std::uint32_t            roadUploaded = 0;
-            Target                   target;
+            Target                   targets[2];  // the minimap's picture, the local map's (both may be up in one frame: one fading out)
         } r;
 
         // the shaders are compiled on a thread of their own as soon as the game's data is loaded (half a second of
@@ -1886,7 +1886,7 @@ float4 PS(VSOut i) : SV_Target
             return nullptr;
         }
         const auto renderStart = std::chrono::steady_clock::now();
-        auto& t = r.target;
+        auto& t = r.targets[std::clamp(a_view.slot, 0, 1)];
         if (!EnsureTarget(device, t, a_view.width, a_view.height)) {
             return nullptr;
         }
