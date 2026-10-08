@@ -1,5 +1,6 @@
 #include "MapMesh.h"
 #include "Menu.h"
+#include "Overlay.h"
 #include "MiniMap.h"
 #include "Settings.h"
 
@@ -25,6 +26,7 @@ namespace
     {
         if (a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
             MapMesh::Prepare();
+            Overlay::Prepare();
             Menu::Register();
             MiniMap::Register();
         } else if (a_msg->type == SKSE::MessagingInterface::kPostLoadGame || a_msg->type == SKSE::MessagingInterface::kNewGame) {

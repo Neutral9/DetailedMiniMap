@@ -2,6 +2,8 @@
 
 #include "Icons.h"
 #include "MapMesh.h"
+#include "Overlay.h"
+#include "Pathing.h"
 #include "Settings.h"
 
 // third-party header: deprecated <codecvt>, mixed enums and so on - not our warnings
@@ -532,8 +534,8 @@ namespace MiniMap
             float                        px = 0, py = 0;                      // the character on it
             std::vector<ScreenIcon>      icons;
             std::vector<ScreenIcon>      quests;         // quest targets (pulled onto the rim when past it)
-            bool                         beam = false;   // the beam to the nearest quest target, to (bx, by)
-            float                        bx = 0, by = 0;
+            bool                         beam = false;   // the beam to the nearest quest target, along beamPath (from the character)
+            std::vector<P2>              beamPath;
             float                        arrowAngle = 0.0f;
             float                        alpha = 1.0f;   // the whole map: fading in or out
             float                        cursorX = -1.0f, cursorY = -1.0f;  // the local map: the menu's cursor (drawn over the map)
@@ -543,6 +545,77 @@ namespace MiniMap
         std::mutex frameLock;
         Frame      frame;       // the minimap
         Frame      localFrame;  // the local map
+
+        // ---- the beam's way: the walking path over the navmesh (Pathing) while it is for this target and still runs by
+        // the character, else straight (main thread)
+        std::vector<RE::NiPoint3> pathNow;     // the last path found
+        RE::NiPoint3              pathTarget;  // ...and its target
+        float                     sincePath = 1.0f;
+
+        float ToSegment2D(const RE::NiPoint3& a_p, const RE::NiPoint3& a_a, const RE::NiPoint3& a_b)
+        {
+            const float dx = a_b.x - a_a.x, dy = a_b.y - a_a.y, len = dx * dx + dy * dy;
+            const float t = len > 0.0f ? std::clamp(((a_p.x - a_a.x) * dx + (a_p.y - a_a.y) * dy) / len, 0.0f, 1.0f) : 0.0f;
+            const float x = a_a.x + dx * t - a_p.x, y = a_a.y + dy * t - a_p.y;
+            return std::sqrt(x * x + y * y);
+        }
+
+        std::vector<RE::NiPoint3> BeamWay(const RE::NiPoint3& a_player, const RE::NiPoint3& a_target)
+        {
+            if (pathNow.size() >= 2 && pathTarget.GetDistance(a_target) < 200.0f) {
+                // where along it the character is now: the nearest of its first legs
+                std::size_t leg = 0;
+                float       best = FLT_MAX;
+                for (std::size_t i = 0; i + 1 < pathNow.size() && i < 8; ++i) {
+                    if (const float d = ToSegment2D(a_player, pathNow[i], pathNow[i + 1]); d < best) {
+                        best = d;
+                        leg = i;
+                    }
+                }
+                if (best < 400.0f) {
+                    std::vector<RE::NiPoint3> out{ a_player };
+                    out.insert(out.end(), pathNow.begin() + static_cast<std::ptrdiff_t>(leg) + 1, pathNow.end());
+                    // the navmesh came short of the target (outside the loaded world): straight on from its end
+                    if (out.back().GetDistance(a_target) > 1.0f) {
+                        out.push_back(a_target);
+                    }
+                    return out;
+                }
+            }
+            return { a_player, a_target };
+        }
+
+        // the nearest quest target (the beam's)
+        std::optional<RE::NiPoint3> NearestQuest(const RE::NiPoint3& a_player)
+        {
+            std::optional<RE::NiPoint3> out;
+            float                       nearest = FLT_MAX;
+            for (const auto& q : quests) {
+                const float dx = q.pos.x - a_player.x, dy = q.pos.y - a_player.y, d = dx * dx + dy * dy;
+                if (d < nearest) {
+                    nearest = d;
+                    out = q.pos;
+                }
+            }
+            return out;
+        }
+
+        // main thread: the navmeshes kept up to date and a new path asked for twice a second
+        void UpdatePath(RE::PlayerCharacter* a_player, float a_dt, bool a_now)
+        {
+            if (!Settings::Map().questBeam || quests.empty()) {
+                return;
+            }
+            sincePath += a_dt;
+            if (sincePath >= 0.5f || a_now) {
+                sincePath = 0.0f;
+                Pathing::Update(a_player);
+                if (const auto target = NearestQuest(a_player->GetPosition())) {
+                    Pathing::Request(a_player->GetPosition(), *target);
+                }
+            }
+            pathNow = Pathing::Path(pathTarget);
+        }
 
         void ClearFrame()
         {
@@ -567,7 +640,8 @@ namespace MiniMap
             if (!Shown(Kind::kQuest) && !Settings::Map().questBeam) {
                 return;
             }
-            float nearest = FLT_MAX;
+            float                       nearest = FLT_MAX;
+            std::optional<RE::NiPoint3> target;
             for (const auto& q : a_world.quests) {
                 const auto [x, y] = a_rim(a_toScreen(q));
                 if (Shown(Kind::kQuest)) {
@@ -576,11 +650,33 @@ namespace MiniMap
                 const float dx = q.x - a_world.player.x, dy = q.y - a_world.player.y, d = dx * dx + dy * dy;
                 if (Settings::Map().questBeam && d < nearest) {
                     nearest = d;
-                    a_f.beam = true;
-                    a_f.bx = x;
-                    a_f.by = y;
+                    target = q;
                 }
             }
+            if (!target) {
+                return;
+            }
+            // the beam: along the way, on the screen, ending where it leaves the picture
+            const auto way = BeamWay(a_world.player, *target);
+            P2         prev = a_toScreen(way[0]);
+            const bool clip = a_inside(prev.first, prev.second) > 0.0f;  // the character off the picture: the picture's own clip does
+            a_f.beamPath.push_back(prev);
+            for (std::size_t i = 1; i < way.size(); ++i) {
+                const P2 next = a_toScreen(way[i]);
+                if (!clip || a_inside(next.first, next.second) > 0.0f) {
+                    a_f.beamPath.push_back(next);
+                    prev = next;
+                    continue;
+                }
+                P2 in = prev, out = next;  // the edge between them
+                for (int k = 0; k < 14; ++k) {
+                    const P2 mid{ (in.first + out.first) * 0.5f, (in.second + out.second) * 0.5f };
+                    (a_inside(mid.first, mid.second) > 0.0f ? in : out) = mid;
+                }
+                a_f.beamPath.push_back(in);
+                break;
+            }
+            a_f.beam = a_f.beamPath.size() >= 2;
         }
 
         Frame BuildMinimap(const World& a_world, float a_w, float a_h)
@@ -757,6 +853,8 @@ namespace MiniMap
             return f;
         }
 
+        bool vanillaHidden = false;  // the game's local map clip hidden by us
+
         void CloseLocal()
         {
             local.open = false;
@@ -770,8 +868,22 @@ namespace MiniMap
             const auto& s = Settings::Map();
             const auto  player = RE::PlayerCharacter::GetSingleton();
             const auto  data = a_menu ? a_menu->GetRuntimeData() : nullptr;
-            const bool  showing = s.enabled && s.localMap && data && data->localMapMenu.GetRuntimeData().showingMap;
+            const bool  ours = s.enabled && s.localMap;
+            const bool  showing = ours && data && data->localMapMenu.GetRuntimeData().showingMap;
             const float w = screenW, h = screenH;
+            // the game's own local map not shown at all while ours replaces it (back when ours is switched off)
+            if (data) {
+                auto& movie = data->localMapMenu.GetRuntimeData().localMapMovie;
+                if (movie.IsDisplayObject() && (ours || vanillaHidden)) {
+                    movie.SetMember("_visible", RE::GFxValue(!ours));
+                    if (ours && !vanillaHidden) {
+                        RE::GFxValue name;
+                        movie.GetMember("_name", &name);
+                        logger::info("local map: the game's own ('{}') hidden", name.IsString() ? name.GetString() : "?");
+                    }
+                    vanillaHidden = ours;
+                }
+            }
             if (!showing || !player || !player->GetParentCell() || w <= 0.0f || h <= 0.0f) {
                 if (local.open) {
                     CloseLocal();
@@ -795,10 +907,12 @@ namespace MiniMap
                 markerRange = inside ? std::max(MinimapReach(true) * 4.0f, 6000.0f) : kLocalReach;
                 GatherStatics(player);
                 GatherQuests(player);
+                UpdatePath(player, 0.0f, true);
                 logger::info("local map: opened at {:.0f} {:.0f}, cursor {:.0f} {:.0f} on a {:.0f} x {:.0f} screen", local.centre.x, local.centre.y, cx, cy, w, h);
             }
             const float dt = std::clamp(std::chrono::duration<float>(now - local.last).count(), 0.0f, 0.1f);
             local.last = now;
+            pathNow = Pathing::Path(pathTarget);  // the one asked for on opening, once found
             float x0, y0, x1, y1;
             LocalRect(w, h, x0, y0, x1, y1);
             const float st = std::max(std::sin(s.minimapTilt * kDeg), 0.3f);
@@ -869,6 +983,8 @@ namespace MiniMap
                 statics.clear();
                 quests.clear();
                 seen.clear();
+                Pathing::Clear();
+                pathNow.clear();
                 if (player) {
                     MapMesh::Update(player, 0.0f, s.enabled ? 0.0f : -1.0f);
                 }
@@ -900,6 +1016,7 @@ namespace MiniMap
                 GatherQuests(player);
             }
             MapMesh::Update(player, dt, harvest);
+            UpdatePath(player, dt, false);
             const auto world = TakeWorld(player, false);
             auto       next = BuildMinimap(world, w, h);
             next.alpha = shown * shown * (3.0f - 2.0f * shown);
@@ -912,7 +1029,7 @@ namespace MiniMap
             }
         }
 
-        // ---- drawing (render thread)
+        // ---- drawing (render thread; the local map's own: the main thread, inside the map menu's drawing)
 
         // a colour with its alpha scaled (the minimap fading in or out)
         ImGui::ImU32 Faded(ImGui::ImU32 a_col, float a_alpha)
@@ -921,7 +1038,7 @@ namespace MiniMap
             return (a_col & 0x00FFFFFFu) | (a << 24);
         }
 
-        float Seconds()  // render thread: the beam's running light
+        float Seconds()  // the beam's running light
         {
             static const auto start = std::chrono::steady_clock::now();
             return std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
@@ -948,46 +1065,76 @@ namespace MiniMap
             }
         }
 
-        // the beam: from the character to the quest target, a soft glow with a bright core and a light running along it
-        void DrawBeam(ImGui::ImDrawList* a_dl, const Frame& a_f, float a_k, float a_alpha)
+        // the beam: along its way from the character to the quest target, a soft glow with a bright core and a light
+        // running along it
+        void DrawBeam(Canvas& a_c, const Frame& a_f, float a_k, float a_alpha)
         {
-            using V2 = ImGui::ImVec2;
-            namespace D = ImGui::ImDrawListManager;
-            const float dx = a_f.bx - a_f.px, dy = a_f.by - a_f.py;
-            const float len = std::sqrt(dx * dx + dy * dy);
-            const float from = 15.0f * a_k * Settings::Map().iconSize;  // past the character's badge
-            const float to = len - 9.0f * a_k * Settings::Map().iconSize;  // short of the target's
+            const auto& pts = a_f.beamPath;
+            // its length along the way, and where it starts (past the character's badge) and ends (short of the
+            // target's icon)
+            std::vector<float> at{ 0.0f };
+            for (std::size_t i = 1; i < pts.size(); ++i) {
+                const float dx = pts[i].first - pts[i - 1].first, dy = pts[i].second - pts[i - 1].second;
+                at.push_back(at.back() + std::sqrt(dx * dx + dy * dy));
+            }
+            const float from = 15.0f * a_k * Settings::Map().iconSize;
+            const float to = at.back() - 9.0f * a_k * Settings::Map().iconSize;
             if (to - from < 6.0f * a_k) {
                 return;
             }
-            const float ux = dx / len, uy = dy / len;
-            const auto  at = [&](float a_d) { return V2{ a_f.px + ux * a_d, a_f.py + uy * a_d }; };
-            D::AddLine(a_dl, at(from), at(to), Faded(Rgb(255, 196, 80, 60), a_alpha), 8.0f * a_k);
-            D::AddLine(a_dl, at(from), at(to), Faded(Rgb(255, 222, 140, 215), a_alpha), 2.2f * a_k);
+            const auto point = [&](float a_d) {
+                std::size_t i = 1;
+                while (i + 1 < pts.size() && at[i] < a_d) {
+                    ++i;
+                }
+                const float t = at[i] > at[i - 1] ? std::clamp((a_d - at[i - 1]) / (at[i] - at[i - 1]), 0.0f, 1.0f) : 0.0f;
+                return Canvas::V2{ pts[i - 1].first + (pts[i].first - pts[i - 1].first) * t, pts[i - 1].second + (pts[i].second - pts[i - 1].second) * t };
+            };
+            // the legs between from and to, joints rounded
+            std::vector<Canvas::V2> legs{ point(from) };
+            for (std::size_t i = 1; i + 1 < pts.size(); ++i) {
+                if (at[i] > from && at[i] < to) {
+                    legs.push_back({ pts[i].first, pts[i].second });
+                }
+            }
+            legs.push_back(point(to));
+            const auto glow = Faded(Rgb(255, 196, 80, 60), a_alpha), core = Faded(Rgb(255, 222, 140, 215), a_alpha);
+            for (std::size_t i = 1; i < legs.size(); ++i) {
+                a_c.Line(legs[i - 1], legs[i], glow, 8.0f * a_k);
+            }
+            for (std::size_t i = 1; i + 1 < legs.size(); ++i) {
+                a_c.Disc(legs[i], 4.0f * a_k, glow);
+            }
+            for (std::size_t i = 1; i < legs.size(); ++i) {
+                a_c.Line(legs[i - 1], legs[i], core, 2.2f * a_k);
+            }
+            for (std::size_t i = 1; i + 1 < legs.size(); ++i) {
+                a_c.Disc(legs[i], 1.1f * a_k, core);
+            }
             const float step = 24.0f * a_k;
             for (float d = from + std::fmod(Seconds() * 55.0f * a_k, step); d < to; d += step) {
                 // brightest in the middle of the beam, fading at its ends
                 const float t = std::min(d - from, to - d) / (12.0f * a_k);
-                D::AddCircleFilled(a_dl, at(d), 2.3f * a_k, Faded(Rgb(255, 245, 205, 235), a_alpha * std::clamp(t, 0.0f, 1.0f)), 10);
+                a_c.Disc(point(d), 2.3f * a_k, Faded(Rgb(255, 245, 205, 235), a_alpha * std::clamp(t, 0.0f, 1.0f)));
             }
         }
 
         // the icons, the quest targets, the beam and the character over a picture
-        void DrawMarkers(ImGui::ImDrawList* a_dl, const Frame& a_f, float a_k)
+        void DrawMarkers(Canvas& a_c, const Frame& a_f, float a_k)
         {
             const auto& s = Settings::Map();
             const float a = a_f.alpha;
             if (a_f.beam) {
-                DrawBeam(a_dl, a_f, a_k, a);
+                DrawBeam(a_c, a_f, a_k, a);
             }
             const float size = 16.0f * a_k * s.iconSize;
             for (const auto& i : a_f.icons) {
-                Icons::Draw(a_dl, i.kind, i.x, i.y, size, i.alpha * a);
+                Icons::Draw(a_c, i.kind, i.x, i.y, size, i.alpha * a);
             }
             for (const auto& q : a_f.quests) {
-                Icons::Draw(a_dl, q.kind, q.x, q.y, size * 1.15f, q.alpha * a);
+                Icons::Draw(a_c, q.kind, q.x, q.y, size * 1.15f, q.alpha * a);
             }
-            Icons::DrawPlayer(a_dl, a_f.px, a_f.py, 18.0f * a_k * s.iconSize, a_f.arrowAngle, a);
+            Icons::DrawPlayer(a_c, a_f.px, a_f.py, 18.0f * a_k * s.iconSize, a_f.arrowAngle, a);
         }
 
         void DrawMinimap(ImGui::ImDrawList* a_dl, const Frame& a_f, float a_k)
@@ -1015,7 +1162,8 @@ namespace MiniMap
                     ImGui::ImDrawListManager::AddImage(a_dl, tex, V2{ a_f.mx0, a_f.my0 }, V2{ a_f.mx1, a_f.my1 }, V2{ 0.0f, 0.0f }, V2{ 1.0f, 1.0f }, Faded(Rgb(255, 255, 255), a));
                 }
             }
-            DrawMarkers(a_dl, a_f, a_k);
+            ImGuiCanvas canvas(a_dl);
+            DrawMarkers(canvas, a_f, a_k);
             ImGui::ImDrawListManager::PopClipRect(a_dl);
             if (vanilla) {
                 DrawVanillaFrame(a_dl, a_f.mx0, a_f.my0, a_f.mx1, a_f.my1, corner, a_f.round, a_k, a);
@@ -1026,49 +1174,79 @@ namespace MiniMap
             }
         }
 
-        // the local map: the picture over the game's own (its bottom bar left free) in a frame, the place's name on it,
-        // and the cursor (the menu's own is under all this)
-        void DrawLocal(ImGui::ImDrawList* a_dl, const Frame& a_f, float a_k)
+        // the local map: the picture over the game's own (its bottom bar left free), the markers, a frame just inside
+        // its edges (it fills the screen)
+        void DrawLocal(Canvas& a_c, const Frame& a_f, float a_k)
+        {
+            const bool vanilla = Settings::Map().look.style == 1;
+            a_c.Fill({ a_f.mx0, a_f.my0 }, { a_f.mx1, a_f.my1 }, vanilla ? Rgb(20, 19, 16) : Rgb(10, 12, 18));
+            if (a_f.view) {
+                if (const auto tex = MapMesh::Render(*a_f.view)) {
+                    a_c.Image(tex, { a_f.mx0, a_f.my0 }, { a_f.mx1, a_f.my1 }, Rgb(255, 255, 255));
+                }
+            }
+            DrawMarkers(a_c, a_f, a_k);
+            const float in = 6.0f * a_k;
+            const float x0 = a_f.mx0 + in, y0 = a_f.my0 + in, x1 = a_f.mx1 - in, y1 = a_f.my1 - in;
+            if (vanilla) {
+                const float out = 4.0f * a_k;
+                a_c.Outline({ x0 - out * 0.5f, y0 - out * 0.5f }, { x1 + out * 0.5f, y1 + out * 0.5f }, Rgb(18, 17, 15, 225), out);
+                a_c.Outline({ x0 - out, y0 - out }, { x1 + out, y1 + out }, Rgb(214, 212, 204), 2.0f * a_k);
+                a_c.Outline({ x0, y0 }, { x1, y1 }, Rgb(140, 138, 130), 1.0f * a_k);
+            } else {
+                a_c.Outline({ x0, y0 }, { x1, y1 }, Rgb(150, 120, 75), 1.5f * a_k);
+            }
+        }
+
+        // the place's name over the local map (ImGui: the only text)
+        void DrawTitle(ImGui::ImDrawList* a_dl, const Frame& a_f, float a_k)
         {
             using V2 = ImGui::ImVec2;
             namespace D = ImGui::ImDrawListManager;
+            const auto font = ImGui::GetFont();
+            if (a_f.title.empty() || !font) {
+                return;
+            }
             const bool  vanilla = Settings::Map().look.style == 1;
-            const float a = a_f.alpha;
-            const float bottom = a_f.my1;
-            D::AddRectFilled(a_dl, V2{ a_f.mx0, a_f.my0 }, V2{ a_f.mx1, a_f.my1 }, Faded(vanilla ? Rgb(20, 19, 16) : Rgb(10, 12, 18), a), 0.0f, 0);
-            D::PushClipRect(a_dl, V2{ a_f.mx0, a_f.my0 }, V2{ a_f.mx1, a_f.my1 }, true);
-            if (a_f.view) {
-                if (const auto tex = MapMesh::Render(*a_f.view)) {
-                    D::AddImage(a_dl, tex, V2{ a_f.mx0, a_f.my0 }, V2{ a_f.mx1, a_f.my1 }, V2{ 0.0f, 0.0f }, V2{ 1.0f, 1.0f }, Faded(Rgb(255, 255, 255), a));
-                }
+            const float base = ImGui::GetFontSize();
+            const float size = 30.0f * a_k;
+            const auto  ts = ImGui::CalcTextSize(a_f.title.c_str());
+            const float kk = base > 0.0f ? size / base : 1.0f;
+            const V2    at{ (a_f.mx0 + a_f.mx1) * 0.5f - ts.x * kk * 0.5f, a_f.my0 + 18.0f * a_k };
+            D::AddText(a_dl, font, size, V2{ at.x + 2.0f * a_k, at.y + 2.0f * a_k }, Rgb(0, 0, 0, 220), a_f.title.c_str());
+            D::AddText(a_dl, font, size, at, vanilla ? Rgb(236, 232, 220) : Rgb(225, 230, 240), a_f.title.c_str());
+        }
+
+        // the local map drawn inside the map menu's own drawing (main thread), before the cursor menu: the game's
+        // cursor over it. When that cannot draw, the HUD element draws it with ImGui instead
+        std::atomic<std::int64_t> localDrawnAt = 0;  // steady clock ticks of the last time it was drawn there
+
+        std::int64_t Ticks()
+        {
+            return std::chrono::steady_clock::now().time_since_epoch().count();
+        }
+
+        bool DrawnInMenu()
+        {
+            return Ticks() - localDrawnAt.load() < std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::milliseconds(250)).count();
+        }
+
+        void DrawLocalInMenu()
+        {
+            Frame f;
+            {
+                std::scoped_lock lock(frameLock);
+                f = localFrame;
             }
-            DrawMarkers(a_dl, a_f, a_k);
-            D::PopClipRect(a_dl);
-            // the frame just inside the picture's edges (it fills the screen)
-            const float in = 6.0f * a_k;
-            if (vanilla) {
-                DrawVanillaFrame(a_dl, a_f.mx0 + in, a_f.my0 + in, a_f.mx1 - in, a_f.my1 - in, 0.0f, false, a_k, a);
-            } else {
-                D::AddRect(a_dl, V2{ a_f.mx0 + in, a_f.my0 + in }, V2{ a_f.mx1 - in, a_f.my1 - in }, Faded(Rgb(150, 120, 75), a), 0.0f, 0, 1.5f * a_k);
+            const float w = screenW, h = screenH;
+            if (!f.has || w <= 0.0f || h <= 0.0f) {
+                return;
             }
-            if (!a_f.title.empty()) {
-                if (const auto font = ImGui::GetFont()) {
-                    const float base = ImGui::GetFontSize();
-                    const float size = 30.0f * a_k;
-                    const auto  ts = ImGui::CalcTextSize(a_f.title.c_str());
-                    const float kk = base > 0.0f ? size / base : 1.0f;
-                    const V2    at{ (a_f.mx0 + a_f.mx1) * 0.5f - ts.x * kk * 0.5f, a_f.my0 + 18.0f * a_k };
-                    D::AddText(a_dl, font, size, V2{ at.x + 2.0f * a_k, at.y + 2.0f * a_k }, Faded(Rgb(0, 0, 0, 220), a), a_f.title.c_str());
-                    D::AddText(a_dl, font, size, at, Faded(vanilla ? Rgb(236, 232, 220) : Rgb(225, 230, 240), a), a_f.title.c_str());
-                }
-            }
-            // the cursor, while it is over what covers the menu's own
-            const float x = a_f.cursorX, y = a_f.cursorY;
-            if (x >= 0.0f && y >= 0.0f && y < bottom && a >= 1.0f) {
-                const float s = 22.0f * a_k;
-                const V2    tip{ x, y }, left{ x, y + s }, right{ x + s * 0.72f, y + s * 0.72f };
-                D::AddTriangleFilled(a_dl, tip, left, right, Rgb(235, 230, 215));
-                D::AddTriangle(a_dl, tip, left, right, Rgb(20, 18, 15), 1.5f * a_k);
+            Overlay::Sprites sprites;
+            DrawLocal(sprites, f, h / 1080.0f);
+            const float clip[4]{ f.mx0, f.my0, f.mx1, f.my1 };
+            if (Overlay::Draw(sprites.batches, w, h, clip)) {
+                localDrawnAt = Ticks();
             }
         }
 
@@ -1090,28 +1268,24 @@ namespace MiniMap
                 std::scoped_lock lock(frameLock);
                 f = ui->IsMenuOpen(RE::MapMenu::MENU_NAME) && localFrame.has ? localFrame : frame;
             }
-            // the local map: while it is up; once closed (or the world map chosen) its last picture fades out over the
-            // game's own as that one goes, so the game's never shows through
-            static Frame                                 fading;
-            static std::chrono::steady_clock::time_point goneAt;
-            constexpr float                              kLocalFade = 0.4f;
             if (f.has && f.local) {
-                fading = f;
-                fading.cursorX = -1.0f;
-                goneAt = std::chrono::steady_clock::now();
-                if (ui->IsShowingMenus()) {
-                    DrawLocal(dl, f, k);
+                if (!ui->IsShowingMenus()) {
+                    return;
                 }
+                if (!DrawnInMenu()) {
+                    // the map menu's drawing did not take it: all of it here, with a cursor of our own over it
+                    ImGuiCanvas canvas(dl);
+                    DrawLocal(canvas, f, k);
+                    if (f.cursorX >= 0.0f && f.cursorY >= 0.0f && f.cursorY < f.my1) {
+                        using V2 = ImGui::ImVec2;
+                        const float s = 22.0f * k;
+                        const V2    tip{ f.cursorX, f.cursorY }, left{ f.cursorX, f.cursorY + s }, right{ f.cursorX + s * 0.72f, f.cursorY + s * 0.72f };
+                        ImGui::ImDrawListManager::AddTriangleFilled(dl, tip, left, right, Rgb(235, 230, 215));
+                        ImGui::ImDrawListManager::AddTriangle(dl, tip, left, right, Rgb(20, 18, 15), 1.5f * k);
+                    }
+                }
+                DrawTitle(dl, f, k);
                 return;
-            }
-            if (fading.has) {
-                const float t = std::chrono::duration<float>(std::chrono::steady_clock::now() - goneAt).count() / kLocalFade;
-                if (t >= 1.0f) {
-                    fading = {};
-                } else {
-                    fading.alpha = 1.0f - t * t;
-                    DrawLocal(dl, fading, k);
-                }
             }
             if (ui->GameIsPaused() || !ui->IsShowingMenus()) {
                 return;
@@ -1141,6 +1315,17 @@ namespace MiniMap
             {
                 func(a_this, a_interval, a_currentTime);
                 UpdateLocal(a_this);
+            }
+            static inline REL::Relocation<decltype(thunk)> func;
+        };
+
+        // MapMenu::PostDisplay: the map menu drawn - ours goes right over it (the cursor menu comes after)
+        struct MapDisplayHook
+        {
+            static void thunk(RE::MapMenu* a_this)
+            {
+                func(a_this);
+                DrawLocalInMenu();
             }
             static inline REL::Relocation<decltype(thunk)> func;
         };
@@ -1242,6 +1427,7 @@ namespace MiniMap
         HudAdvanceHook::func = hud.write_vfunc(0x5, HudAdvanceHook::thunk);
         REL::Relocation<std::uintptr_t> map{ RE::VTABLE_MapMenu[0] };
         MapAdvanceHook::func = map.write_vfunc(0x5, MapAdvanceHook::thunk);
+        MapDisplayHook::func = map.write_vfunc(0x6, MapDisplayHook::thunk);
         logger::info("hooks installed");
     }
 

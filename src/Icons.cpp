@@ -62,43 +62,28 @@ namespace Icons
             return cache[i];
         }
 
-        void Sword(ImGui::ImDrawList* a_dl, float a_x, float a_y, float a_s, ImGui::ImU32 a_col)
+        void Sword(Canvas& a_c, float a_x, float a_y, float a_s, Canvas::Color a_col)
         {
-            using V2 = ImGui::ImVec2;
-            const auto p = [&](float u, float v) { return V2{ a_x + u * a_s, a_y + v * a_s }; };
-            ImGui::ImDrawListManager::AddLine(a_dl, p(-0.08f, 0.08f), p(0.22f, -0.22f), a_col, std::max(a_s * 0.09f, 1.5f));
-            ImGui::ImDrawListManager::AddTriangleFilled(a_dl, p(0.18f, -0.27f), p(0.28f, -0.28f), p(0.27f, -0.18f), a_col);
-            ImGui::ImDrawListManager::AddLine(a_dl, p(-0.21f, -0.02f), p(0.02f, 0.21f), a_col, std::max(a_s * 0.08f, 1.2f));
-            ImGui::ImDrawListManager::AddLine(a_dl, p(-0.08f, 0.08f), p(-0.20f, 0.20f), a_col, std::max(a_s * 0.07f, 1.2f));
+            const auto p = [&](float u, float v) { return Canvas::V2{ a_x + u * a_s, a_y + v * a_s }; };
+            a_c.Line(p(-0.08f, 0.08f), p(0.22f, -0.22f), a_col, std::max(a_s * 0.09f, 1.5f));
+            a_c.Triangle(p(0.18f, -0.27f), p(0.28f, -0.28f), p(0.27f, -0.18f), a_col);
+            a_c.Line(p(-0.21f, -0.02f), p(0.02f, 0.21f), a_col, std::max(a_s * 0.08f, 1.2f));
+            a_c.Line(p(-0.08f, 0.08f), p(-0.20f, 0.20f), a_col, std::max(a_s * 0.07f, 1.2f));
         }
 
-        // no texture: a drawn badge, the glyph from the Menu Framework's Font Awesome if it has it
-        void Fallback(ImGui::ImDrawList* a_dl, Kind a_kind, float a_x, float a_y, float a_size, int a_alpha)
+        // no texture: a drawn badge, the glyph from the Menu Framework's Font Awesome if it has it (and the canvas a font)
+        void Fallback(Canvas& a_c, Kind a_kind, float a_x, float a_y, float a_size, int a_alpha)
         {
-            using V2 = ImGui::ImVec2;
             const auto& st = kStyles[static_cast<std::size_t>(a_kind)];
             const auto  col = Rgb(st.r, st.g, st.b, a_alpha);
             const float r = a_size * 0.5f;
-            ImGui::ImDrawListManager::AddCircleFilled(a_dl, V2{ a_x, a_y }, r, Rgb(10, 12, 18, a_alpha * 215 / 255), 20);
-            ImGui::ImDrawListManager::AddCircle(a_dl, V2{ a_x, a_y }, r, col, 20, std::max(a_size * 0.07f, 1.0f));
+            a_c.Disc({ a_x, a_y }, r, Rgb(10, 12, 18, a_alpha * 215 / 255));
+            a_c.Ring({ a_x, a_y }, r, col, std::max(a_size * 0.07f, 1.0f));
             if (!st.glyph) {
-                Sword(a_dl, a_x, a_y, a_size, col);
-                return;
+                Sword(a_c, a_x, a_y, a_size, col);
+            } else if (!a_c.Glyph(st.glyph, { a_x, a_y }, a_size * 0.58f, col)) {
+                a_c.Disc({ a_x, a_y }, r * 0.45f, col);
             }
-            FontAwesome::PushSolid();
-            const auto font = ImGui::GetFont();
-            if (font && ImGui::ImFontManger::FindGlyphNoFallback(font, static_cast<ImGui::ImWchar>(st.glyph))) {
-                const unsigned cp = st.glyph;
-                const char     text[4] = { static_cast<char>(0xE0 | (cp >> 12)), static_cast<char>(0x80 | ((cp >> 6) & 0x3F)), static_cast<char>(0x80 | (cp & 0x3F)), 0 };
-                const float    base = ImGui::GetFontSize();
-                const float    size = a_size * 0.58f;
-                const auto     ts = ImGui::CalcTextSize(text);
-                const float    k = base > 0.0f ? size / base : 1.0f;
-                ImGui::ImDrawListManager::AddText(a_dl, font, size, V2{ a_x - ts.x * k * 0.5f, a_y - ts.y * k * 0.5f }, col, text);
-            } else {
-                ImGui::ImDrawListManager::AddCircleFilled(a_dl, V2{ a_x, a_y }, r * 0.45f, col, 12);
-            }
-            FontAwesome::Pop();
         }
     }
 
@@ -112,9 +97,8 @@ namespace Icons
         return kStyles[static_cast<std::size_t>(a_kind)].file;
     }
 
-    void Draw(ImGui::ImDrawList* a_dl, Kind a_kind, float a_x, float a_y, float a_size, float a_alpha)
+    void Draw(Canvas& a_canvas, Kind a_kind, float a_x, float a_y, float a_size, float a_alpha)
     {
-        using V2 = ImGui::ImVec2;
         const int alpha = static_cast<int>(255.0f * std::clamp(a_alpha, 0.0f, 1.0f));
         if (alpha <= 0) {
             return;
@@ -124,16 +108,15 @@ namespace Icons
             // pixels the small picture is resampled lopsided)
             const float size = std::max(std::round(a_size * 0.5f) * 2.0f, 4.0f);
             const float x0 = std::round(a_x - size * 0.5f), y0 = std::round(a_y - size * 0.5f);
-            ImGui::ImDrawListManager::AddImage(a_dl, tex, V2{ x0, y0 }, V2{ x0 + size, y0 + size }, V2{ 0.0f, 0.0f }, V2{ 1.0f, 1.0f }, Rgb(255, 255, 255, alpha));
+            a_canvas.Image(tex, { x0, y0 }, { x0 + size, y0 + size }, Rgb(255, 255, 255, alpha));
             return;
         }
-        Fallback(a_dl, a_kind, a_x, a_y, a_size, alpha);
+        Fallback(a_canvas, a_kind, a_x, a_y, a_size, alpha);
     }
 
-    void DrawPlayer(ImGui::ImDrawList* a_dl, float a_x, float a_y, float a_size, float a_angle, float a_alpha)
+    void DrawPlayer(Canvas& a_canvas, float a_x, float a_y, float a_size, float a_angle, float a_alpha)
     {
-        using V2 = ImGui::ImVec2;
-        const auto A = [&](int a_a) { return static_cast<int>(static_cast<float>(a_a) * std::clamp(a_alpha, 0.0f, 1.0f)); };
+        const auto                A = [&](int a_a) { return static_cast<int>(static_cast<float>(a_a) * std::clamp(a_alpha, 0.0f, 1.0f)); };
         static ImGui::ImTextureID tex = nullptr;
         static bool               tried = false;
         if (!tried) {
@@ -145,17 +128,17 @@ namespace Icons
         }
         const float r = a_size * 0.5f;
         // the pointer first, under the badge: a dark outline, then gold, its tip a bit past the rim
-        const auto at = [&](float a_a, float a_d) { return V2{ a_x + std::sin(a_angle + a_a) * a_d, a_y - std::cos(a_angle + a_a) * a_d }; };
-        ImGui::ImDrawListManager::AddTriangleFilled(a_dl, at(0.0f, r * 1.62f), at(-0.62f, r * 0.80f), at(0.62f, r * 0.80f), Rgb(15, 12, 8, A(235)));
-        ImGui::ImDrawListManager::AddTriangleFilled(a_dl, at(0.0f, r * 1.45f), at(-0.52f, r * 0.85f), at(0.52f, r * 0.85f), Rgb(255, 210, 90, A(255)));
+        const auto at = [&](float a_a, float a_d) { return Canvas::V2{ a_x + std::sin(a_angle + a_a) * a_d, a_y - std::cos(a_angle + a_a) * a_d }; };
+        a_canvas.Triangle(at(0.0f, r * 1.62f), at(-0.62f, r * 0.80f), at(0.62f, r * 0.80f), Rgb(15, 12, 8, A(235)));
+        a_canvas.Triangle(at(0.0f, r * 1.45f), at(-0.52f, r * 0.85f), at(0.52f, r * 0.85f), Rgb(255, 210, 90, A(255)));
         if (tex) {
             const float size = std::max(std::round(r) * 2.0f, 4.0f);
             const float x0 = std::round(a_x - size * 0.5f), y0 = std::round(a_y - size * 0.5f);
-            ImGui::ImDrawListManager::AddImage(a_dl, tex, V2{ x0, y0 }, V2{ x0 + size, y0 + size }, V2{ 0.0f, 0.0f }, V2{ 1.0f, 1.0f }, Rgb(255, 255, 255, A(255)));
+            a_canvas.Image(tex, { x0, y0 }, { x0 + size, y0 + size }, Rgb(255, 255, 255, A(255)));
             return;
         }
-        ImGui::ImDrawListManager::AddCircleFilled(a_dl, V2{ a_x, a_y }, r, Rgb(10, 12, 18, A(230)), 24);
-        ImGui::ImDrawListManager::AddCircle(a_dl, V2{ a_x, a_y }, r, Rgb(255, 210, 90, A(255)), 24, std::max(a_size * 0.08f, 1.0f));
-        ImGui::ImDrawListManager::AddCircleFilled(a_dl, V2{ a_x, a_y }, r * 0.35f, Rgb(255, 210, 90, A(255)), 16);
+        a_canvas.Disc({ a_x, a_y }, r, Rgb(10, 12, 18, A(230)));
+        a_canvas.Ring({ a_x, a_y }, r, Rgb(255, 210, 90, A(255)), std::max(a_size * 0.08f, 1.0f));
+        a_canvas.Disc({ a_x, a_y }, r * 0.35f, Rgb(255, 210, 90, A(255)));
     }
 }
