@@ -801,13 +801,13 @@ namespace MiniMap
             return { c.cursorPosX * sx, c.cursorPosY * sy };
         }
 
-        // the local map's picture on the screen: all of it over the menu's bottom bar (where the game's own is)
+        // the local map's picture on the screen: all of it
         void LocalRect(float a_w, float a_h, float& a_x0, float& a_y0, float& a_x1, float& a_y1)
         {
             a_x0 = 0.0f;
             a_x1 = a_w;
             a_y0 = 0.0f;
-            a_y1 = std::round(a_h * 0.866f);
+            a_y1 = a_h;
         }
 
         std::string PlaceName(RE::PlayerCharacter* a_player)
@@ -871,55 +871,21 @@ namespace MiniMap
 
         bool vanillaHidden = false;  // the game's local map clip hidden by us
 
-        // the local map opened from the game by its key: the map menu opened, then switched to the local map as its
-        // own key (the "LocalMap" control) does - pressed once its controls are up, released if pressing did not do it
-        struct OpenRequest
-        {
-            bool active = false;
-            int  frames = 0;  // map menu frames since the last step
-            int  step = 0;    // 0 waiting for the menu, 1 pressed, 2 released
-        } openRequest;
+        // our local map is a menu of its own (it pauses the game, the game's cursor over it): opened by its key from the
+        // game, or instead of the game's own when the map menu switches to that
+        constexpr std::string_view kLocalMenu = "DetailedMiniMap LocalMap";
 
         void OpenLocalMap()
         {
             if (const auto queue = RE::UIMessageQueue::GetSingleton()) {
-                queue->AddMessage(RE::MapMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kShow, nullptr);
-                openRequest = { true, 0, 0 };
+                queue->AddMessage(kLocalMenu, RE::UI_MESSAGE_TYPE::kShow, nullptr);
             }
         }
 
-        void PressLocalMapControl(bool a_down)
+        bool LocalMenuOpen()
         {
-            const auto events = RE::UserEvents::GetSingleton();
-            const auto controls = RE::MenuControls::GetSingleton();
-            const auto event = events && controls ? RE::ButtonEvent::Create(RE::INPUT_DEVICE::kKeyboard, events->localMap, 38, a_down ? 1.0f : 0.0f, a_down ? 0.0f : 0.1f) : nullptr;
-            if (!event) {
-                return;
-            }
-            RE::InputEvent* list = event;
-            controls->ProcessEvent(&list, nullptr);
-            RE::free(event);
-        }
-
-        void StepOpenRequest(RE::MapMenu* a_menu, bool a_showing)
-        {
-            if (!openRequest.active || !a_menu) {
-                return;
-            }
-            ++openRequest.frames;
-            const auto data2 = a_menu->GetRuntimeData2();
-            const bool ready = data2 && data2->controlsReady;
-            if (a_showing || openRequest.frames > 180) {
-                openRequest.active = false;
-            } else if (openRequest.step == 0 && ready && openRequest.frames > 2) {
-                PressLocalMapControl(true);
-                openRequest.step = 1;
-                openRequest.frames = 0;
-            } else if (openRequest.step == 1 && openRequest.frames > 20) {
-                PressLocalMapControl(false);
-                openRequest.step = 2;
-                openRequest.frames = 0;
-            }
+            const auto ui = RE::UI::GetSingleton();
+            return ui && ui->IsMenuOpen(kLocalMenu);
         }
 
         // what a reference is called on the map: a door by where it leads, anything else by its name
@@ -983,16 +949,16 @@ namespace MiniMap
             localFrame = {};
         }
 
-        // main thread, every frame of the map menu
-        void UpdateLocal(RE::MapMenu* a_menu)
+        // main thread, every frame of the map menu: switched to the game's local map, it closes and ours opens instead
+        // (the game's then never runs: no markers of its own picked under the cursor behind ours)
+        bool switching = false;
+
+        void UpdateMapMenu(RE::MapMenu* a_menu)
         {
             const auto& s = Settings::Map();
-            const auto  player = RE::PlayerCharacter::GetSingleton();
             const auto  data = a_menu ? a_menu->GetRuntimeData() : nullptr;
             const bool  ours = s.enabled && s.localMap;
-            StepOpenRequest(a_menu, data && data->localMapMenu.GetRuntimeData().showingMap);
             const bool  showing = ours && data && data->localMapMenu.GetRuntimeData().showingMap;
-            const float w = screenW, h = screenH;
             // the game's own local map not shown at all while ours replaces it (back when ours is switched off)
             if (data) {
                 auto& movie = data->localMapMenu.GetRuntimeData().localMapMovie;
@@ -1006,7 +972,25 @@ namespace MiniMap
                     vanillaHidden = ours;
                 }
             }
-            if (!showing || !player || !player->GetParentCell() || w <= 0.0f || h <= 0.0f) {
+            if (showing && !switching) {
+                switching = true;
+                if (const auto queue = RE::UIMessageQueue::GetSingleton()) {
+                    queue->AddMessage(RE::MapMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+                }
+                OpenLocalMap();
+            } else if (!showing) {
+                switching = false;
+            }
+        }
+
+        // main thread, every frame of our local map menu
+        void UpdateLocal()
+        {
+            const auto& s = Settings::Map();
+            const auto  player = RE::PlayerCharacter::GetSingleton();
+            const float w = screenW, h = screenH;
+            switching = false;
+            if (!s.enabled || !player || !player->GetParentCell() || w <= 0.0f || h <= 0.0f) {
                 if (local.open) {
                     CloseLocal();
                 }
@@ -1111,7 +1095,7 @@ namespace MiniMap
             const auto  player = RE::PlayerCharacter::GetSingleton();
             const auto& s = Settings::Map();
             const float w = screenW, h = screenH;
-            if (local.open && !RE::UI::GetSingleton()->IsMenuOpen(RE::MapMenu::MENU_NAME)) {
+            if (local.open && !LocalMenuOpen()) {
                 CloseLocal();  // the map menu is closed
             }
             // the map off: nothing is done, the geometry unloads
@@ -1429,7 +1413,7 @@ namespace MiniMap
             Frame      f;
             {
                 std::scoped_lock lock(frameLock);
-                f = ui->IsMenuOpen(RE::MapMenu::MENU_NAME) && localFrame.has ? localFrame : frame;
+                f = ui->IsMenuOpen(kLocalMenu) && localFrame.has ? localFrame : frame;
             }
             if (f.has && f.local) {
                 if (!ui->IsShowingMenus()) {
@@ -1478,21 +1462,47 @@ namespace MiniMap
             static void thunk(RE::MapMenu* a_this, float a_interval, std::uint32_t a_currentTime)
             {
                 func(a_this, a_interval, a_currentTime);
-                UpdateLocal(a_this);
+                UpdateMapMenu(a_this);
             }
             static inline REL::Relocation<decltype(thunk)> func;
         };
 
-        // MapMenu::PostDisplay: the map menu drawn - ours goes right over it (the cursor menu comes after)
-        struct MapDisplayHook
+        // our local map's menu: no movie of its own - updated and drawn (our sprites) where the game updates and draws
+        // a menu, so the cursor menu still comes after it
+        class LocalMenu final : public RE::IMenu
         {
-            static void thunk(RE::MapMenu* a_this)
+        public:
+            LocalMenu()
             {
-                func(a_this);
-                DrawLocalInMenu();
+                using Flag = RE::UI_MENU_FLAGS;
+                menuFlags.set(Flag::kPausesGame, Flag::kUsesCursor, Flag::kUsesMenuContext, Flag::kModal, Flag::kDisablePauseMenu, Flag::kCustomRendering);
+                depthPriority = 3;
+                inputContext = Context::kMenuMode;
             }
-            static inline REL::Relocation<decltype(thunk)> func;
+
+            static RE::IMenu* Create() { return new LocalMenu(); }
+
+            void AdvanceMovie(float, std::uint32_t) override { UpdateLocal(); }
+            void PostDisplay() override { DrawLocalInMenu(); }
+
+            RE::UI_MESSAGE_RESULTS ProcessMessage(RE::UIMessage& a_message) override
+            {
+                if (a_message.type == RE::UI_MESSAGE_TYPE::kHide || a_message.type == RE::UI_MESSAGE_TYPE::kForceHide) {
+                    CloseLocal();
+                }
+                return RE::IMenu::ProcessMessage(a_message);
+            }
         };
+
+        void CloseLocalMenu(bool a_toWorldMap)
+        {
+            if (const auto queue = RE::UIMessageQueue::GetSingleton()) {
+                queue->AddMessage(kLocalMenu, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+                if (a_toWorldMap) {
+                    queue->AddMessage(RE::MapMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kShow, nullptr);
+                }
+            }
+        }
 
         // ---- the keys: one code for every device, as SKSE counts them (the keyboard's scan codes, 256 + a mouse button,
         // 264 / 265 the wheel, 266 + a gamepad button); a bind is a key and, optionally, another held with it
@@ -1628,6 +1638,15 @@ namespace MiniMap
                     } else if (button->IsDown() && (code == kWheelUp || code == kWheelDown) && local.open) {
                         wheel += code == kWheelUp ? 1 : -1;
                     }
+                    // our local map up: closed by Esc, Tab, gamepad B or its own key; M goes on to the world map
+                    if (!captureSlot && code != 0 && button->IsDown() && LocalMenuOpen()) {
+                        if (code == kEscape || code == 15 || code == kPadBase + 11 || ActionOf(code) == Action::kLocalMap) {
+                            CloseLocalMenu(false);
+                        } else if (code == 50) {
+                            CloseLocalMenu(true);
+                        }
+                        continue;
+                    }
                     if (captureSlot || !s.enabled || code == 0 || !InGameplay()) {
                         continue;
                     }
@@ -1729,6 +1748,7 @@ namespace MiniMap
         }
         if (const auto ui = RE::UI::GetSingleton()) {
             ui->AddEventSink<RE::MenuOpenCloseEvent>(MenuSink::GetSingleton());
+            ui->Register(kLocalMenu, LocalMenu::Create);
         }
         if (SKSEMenuFramework::IsInstalled()) {
             SKSEMenuFramework::AddHudElement(Draw);
@@ -1745,7 +1765,6 @@ namespace MiniMap
         ControlsHook::func = controls.write_vfunc(0x1, ControlsHook::thunk);
         REL::Relocation<std::uintptr_t> map{ RE::VTABLE_MapMenu[0] };
         MapAdvanceHook::func = map.write_vfunc(0x5, MapAdvanceHook::thunk);
-        MapDisplayHook::func = map.write_vfunc(0x6, MapDisplayHook::thunk);
         logger::info("hooks installed");
     }
 
