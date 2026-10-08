@@ -1,6 +1,7 @@
 #include "MiniMap.h"
 
 #include "Icons.h"
+#include "Lang.h"
 #include "MapMesh.h"
 #include "Overlay.h"
 #include "Pathing.h"
@@ -11,6 +12,7 @@
 #pragma warning(push, 0)
 #include <SKSEMenuFramework.h>
 #pragma warning(pop)
+#undef PlaySound  // Windows' macro, not RE::PlaySound
 
 namespace ImGui = ImGuiMCP;
 
@@ -38,11 +40,16 @@ namespace MiniMap
         float                       shown = 0.0f;         // main thread: how much of the minimap shows, 0..1 (fading to Settings visible; in on the first frame)
 
         // the mouse, for the local map (main thread: input events and the map menu's update)
-        bool mouseHeld = false;  // the left button down
+        bool mouseHeld = false;     // the left button down
+        bool mouseClicked = false;  // ...pressed since the last local map update
+        bool legendHeld = false;    // ...pressed on the legend: no dragging the map with it
         int  wheel = 0;          // wheel steps since the last map update (up: +)
         std::pair<float, float> leftStick{}, rightStick{};  // the gamepad's sticks (the local map: moved, zoomed)
         float saveIn = -1.0f;    // seconds until a zoomed minimap range is written to the ini
         std::atomic<std::uint32_t*> captureMod = nullptr;  // the bind being set: where the key held with it goes
+        std::atomic<std::uint32_t>  captureFirst = 0;        // ...the first key pressed for it, waiting: let go alone, or another pressed with it
+        std::atomic<std::uint32_t*> capturePad = nullptr;     // ...where a gamepad key goes instead (its own bind), and the key held with it
+        std::atomic<std::uint32_t*> capturePadMod = nullptr;
 
         // free gameplay: no menu takes the input, nothing paused
         bool InGameplay()
@@ -234,6 +241,27 @@ namespace MiniMap
             return false;
         }
 
+        // an ore vein with ore left: an activator running the game's MineOreScript (mods' veins use it too), its
+        // ResourceCountCurrent not down to 0 (-1: never mined)
+        bool OreLeft(RE::TESObjectREFR* a_ref)
+        {
+            const auto vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+            const auto policy = vm ? vm->GetObjectHandlePolicy() : nullptr;
+            if (!policy) {
+                return false;
+            }
+            const auto handle = policy->GetHandleForObject(RE::TESObjectREFR::FORMTYPE, a_ref);
+            if (handle == policy->EmptyHandle()) {
+                return false;
+            }
+            RE::BSTSmartPointer<RE::BSScript::Object> script;
+            if (!vm->FindBoundObject(handle, "MineOreScript", script) || !script) {
+                return false;
+            }
+            const auto count = script->GetProperty("ResourceCountCurrent");
+            return !count || !count->IsInt() || count->GetSInt() != 0;
+        }
+
         // every kind is gathered (the menu can switch one back on any moment); hidden ones are skipped when drawn
         void GatherStatics(RE::PlayerCharacter* a_player)
         {
@@ -267,6 +295,10 @@ namespace MiniMap
                     if (Pickable(a_ref, base)) {
                         statics.push_back({ a_ref->GetPosition(), Kind::kFlora, a_ref->GetFormID() });
                     }
+                } else if (base->Is(RE::FormType::Activator)) {
+                    if (a_ref->Is3DLoaded() && OreLeft(a_ref)) {
+                        statics.push_back({ a_ref->GetPosition(), Kind::kOre, a_ref->GetFormID() });
+                    }
                 } else if (a_ref->Is3DLoaded()) {
                     if (const auto kind = ItemKind(base)) {
                         statics.push_back({ a_ref->GetPosition(), *kind, a_ref->GetFormID() });
@@ -274,6 +306,20 @@ namespace MiniMap
                 }
                 return RE::BSContainer::ForEachResult::kContinue;
             });
+        }
+
+        // an enemy: willing to fight (a fox or a deer is "hostile" too, but unaggressive: it runs - its combat target is
+        // the one it runs from), and hostile or fighting the player or a follower right now (a guard turned on you)
+        bool Threat(RE::Actor* a_actor, RE::PlayerCharacter* a_player)
+        {
+            if (a_actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kAggression) <= 0.0f) {
+                return false;
+            }
+            if (a_actor->IsHostileToActor(a_player)) {
+                return true;
+            }
+            const auto target = a_actor->GetActorRuntimeData().currentCombatTarget.get();
+            return target && (target.get() == a_player || target->IsPlayerTeammate());
         }
 
         // the characters as they stand this frame, within a_range
@@ -288,7 +334,7 @@ namespace MiniMap
                     continue;
                 }
                 Kind kind;
-                if (actor->IsHostileToActor(a_player)) {
+                if (Threat(actor, a_player)) {
                     kind = Kind::kEnemy;
                 } else if (actor->IsPlayerTeammate()) {
                     kind = Kind::kFollower;
@@ -308,8 +354,13 @@ namespace MiniMap
         {
             auto out = statics;
             Characters(a_player, markerRange, out);
-            // fade in what turned up; what is gone stays a moment longer, fading out
             const auto& s = Settings::Map();
+            // only what is near enough, when the icons' distance is set (it fades out past it)
+            if (s.iconRange > 0.0f) {
+                const auto at = a_player->GetPosition();
+                std::erase_if(out, [&](const Marker& a_m) { return a_m.pos.GetDistance(at) > s.iconRange; });
+            }
+            // fade in what turned up; what is gone stays a moment longer, fading out
             const auto  step = [](float a_fade, float a_dt) { return a_fade > 0.0f ? a_dt / a_fade : 1.0f; };
             const auto  key = [](const Marker& a_m) { return (static_cast<std::uint64_t>(a_m.id) << 8) | static_cast<std::uint64_t>(a_m.kind); };
             for (auto& m : out) {
@@ -430,6 +481,9 @@ namespace MiniMap
                 // the game paused: no fading, everything as it is
                 w.markers = statics;
                 Characters(a_player, markerRange, w.markers);
+                if (const float range = Settings::Map().iconRange; range > 0.0f) {
+                    std::erase_if(w.markers, [&](const Marker& a_m) { return a_m.pos.GetDistance(w.player) > range; });
+                }
             } else {
                 w.markers = Markers(a_player);
             }
@@ -803,6 +857,36 @@ namespace MiniMap
             a_y1 = a_h;
         }
 
+        // the local map's legend: a row an icon kind down its right side, clicked to show / hide that kind
+        struct Legend
+        {
+            float x0 = 0, y0 = 0, x1 = 0, y1 = 0;  // the panel
+            float top = 0, row = 0;                 // the first row's top, a row's height
+
+            bool In(float a_x, float a_y) const { return a_x >= x0 && a_x <= x1 && a_y >= y0 && a_y <= y1; }
+            // the row (icon kind) at a point, -1 = none
+            int At(float a_x, float a_y) const
+            {
+                if (!In(a_x, a_y) || a_y < top) {
+                    return -1;
+                }
+                const int i = static_cast<int>((a_y - top) / row);
+                return i < static_cast<int>(Icons::kCount) ? i : -1;
+            }
+        };
+
+        Legend LegendOf(float a_mx1, float a_my0, float a_k)
+        {
+            Legend l;
+            l.row = 30.0f * a_k;
+            l.x1 = a_mx1 - 28.0f * a_k;
+            l.x0 = l.x1 - 250.0f * a_k;
+            l.y0 = a_my0 + 90.0f * a_k;
+            l.top = l.y0 + 44.0f * a_k;  // under its title
+            l.y1 = l.top + l.row * static_cast<float>(Icons::kCount) + 10.0f * a_k;
+            return l;
+        }
+
         std::string PlaceName(RE::PlayerCharacter* a_player)
         {
             const auto cell = a_player->GetParentCell();
@@ -868,17 +952,26 @@ namespace MiniMap
         // game, or instead of the game's own when the map menu switches to that
         constexpr std::string_view kLocalMenu = "DetailedMiniMap LocalMap";
 
-        void OpenLocalMap()
-        {
-            if (const auto queue = RE::UIMessageQueue::GetSingleton()) {
-                queue->AddMessage(kLocalMenu, RE::UI_MESSAGE_TYPE::kShow, nullptr);
-            }
-        }
-
         bool LocalMenuOpen()
         {
             const auto ui = RE::UI::GetSingleton();
             return ui && ui->IsMenuOpen(kLocalMenu);
+        }
+
+        // ours opened over the map menu's world map (L there): closed by L it goes back to it, the map menu stays
+        bool overWorld = false;
+        bool openAsked = false;  // shown, not up yet (the map menu's switch and the key may both ask in one frame)
+
+        void OpenLocalMap(bool a_overWorld = false)
+        {
+            if (openAsked || LocalMenuOpen()) {
+                return;
+            }
+            openAsked = true;
+            overWorld = a_overWorld;
+            if (const auto queue = RE::UIMessageQueue::GetSingleton()) {
+                queue->AddMessage(kLocalMenu, RE::UI_MESSAGE_TYPE::kShow, nullptr);
+            }
         }
 
         // what a reference is called on the map: a door by where it leads, anything else by its name
@@ -938,6 +1031,8 @@ namespace MiniMap
         void CloseLocal()
         {
             local.open = false;
+            overWorld = false;
+            openAsked = false;
             std::scoped_lock lock(frameLock);
             localFrame = {};
         }
@@ -945,6 +1040,25 @@ namespace MiniMap
         // main thread, every frame of the map menu: switched to the game's local map, it closes and ours opens instead
         // (the game's then never runs: no markers of its own picked under the cursor behind ours)
         bool switching = false;
+        // the world map asked for from ours (M): the map menu opens on the local map inside, so it is switched to the
+        // world map (what the game's own World Map button does) instead of handing over to ours again
+        bool worldWanted = false;
+        int  worldWait = 0;          // frames the switch has been waited for
+        bool mapSawWorld = false;    // the map menu has shown its world map since it opened (cleared when it closes)
+
+        void ToWorldMap(RE::MapMenu* a_menu)
+        {
+            const auto   movie = a_menu->uiMovie;
+            RE::GFxValue delegate;
+            if (!movie || !movie->GetVariable(&delegate, "_global.gfx.io.GameDelegate") || !delegate.IsObject()) {
+                logger::warn("local map: the map menu has no GameDelegate - no world map switch");
+                return;
+            }
+            RE::GFxValue args[2];
+            args[0] = "ToggleMapCallback";
+            movie->CreateArray(&args[1]);
+            delegate.Invoke("call", nullptr, args, 2);
+        }
 
         void UpdateMapMenu(RE::MapMenu* a_menu)
         {
@@ -965,14 +1079,32 @@ namespace MiniMap
                     vanillaHidden = ours;
                 }
             }
+            if (showing && worldWanted) {
+                if (worldWait++ == 0) {
+                    ToWorldMap(a_menu);
+                } else if (worldWait > 30) {
+                    worldWanted = false;  // it did not switch: ours after all
+                }
+                return;
+            }
+            worldWanted = false;
+            worldWait = 0;
             if (showing && !switching) {
                 switching = true;
-                if (const auto queue = RE::UIMessageQueue::GetSingleton()) {
-                    queue->AddMessage(RE::MapMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+                if (mapSawWorld) {
+                    // switched from the world map: ours over it, the map menu back on its world map underneath
+                    ToWorldMap(a_menu);
+                    OpenLocalMap(true);
+                } else {
+                    // opened on the local map (inside): ours instead of the map menu
+                    if (const auto queue = RE::UIMessageQueue::GetSingleton()) {
+                        queue->AddMessage(RE::MapMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+                    }
+                    OpenLocalMap();
                 }
-                OpenLocalMap();
             } else if (!showing) {
                 switching = false;
+                mapSawWorld = mapSawWorld || data;
             }
         }
 
@@ -982,7 +1114,10 @@ namespace MiniMap
             const auto& s = Settings::Map();
             const auto  player = RE::PlayerCharacter::GetSingleton();
             const float w = screenW, h = screenH;
-            switching = false;
+            if (!overWorld) {  // over the map menu: it is still switching back to its world map
+                switching = false;
+            }
+            openAsked = false;  // up
             if (!s.enabled || !player || !player->GetParentCell() || w <= 0.0f || h <= 0.0f) {
                 if (local.open) {
                     CloseLocal();
@@ -1016,6 +1151,19 @@ namespace MiniMap
             float x0, y0, x1, y1;
             LocalRect(w, h, x0, y0, x1, y1);
             const float st = std::max(std::sin(s.minimapTilt * kDeg), 0.3f);
+            // a click on the legend shows / hides that kind of icon (and the press drags nothing)
+            const auto legend = LegendOf(x1, y0, h / 1080.0f);
+            if (mouseClicked && legend.In(cx, cy)) {
+                legendHeld = true;
+                if (const int i = legend.At(cx, cy); i >= 0) {
+                    auto& show = Settings::Map().show[i];
+                    show = !show;
+                    Settings::Save();
+                    RE::PlaySound("UIMenuFocus");
+                }
+            }
+            mouseClicked = false;
+            legendHeld = legendHeld && mouseHeld;
             // the wheel zooms (up: in) towards the cursor: the point under it stays where it is
             if (wheel != 0) {
                 const float before = (y1 - y0) * 0.5f / local.range;
@@ -1042,7 +1190,7 @@ namespace MiniMap
             learn(local.gainY, cdy, rawY);
             // dragging moves the map with the mouse; the keys move it a screen's half a second
             float dx = 0.0f, dy = 0.0f;
-            if (mouseHeld) {
+            if (mouseHeld && !legendHeld) {
                 dx += rawX * local.gainX;
                 dy += rawY * local.gainY;
             }
@@ -1070,7 +1218,7 @@ namespace MiniMap
             local.lastY = cy;
             const auto world = TakeWorld(player, true);
             auto       next = BuildLocal(player, world, w, h);
-            if (cx >= next.mx0 && cx <= next.mx1 && cy >= next.my0 && cy <= next.my1 && !mouseHeld) {
+            if (cx >= next.mx0 && cx <= next.mx1 && cy >= next.my0 && cy <= next.my1 && !mouseHeld && !legend.In(cx, cy)) {
                 Hover(next, cx, cy, h / 1080.0f);
             }
             std::scoped_lock lock(frameLock);
@@ -1133,7 +1281,7 @@ namespace MiniMap
             UpdatePath(player, dt, false);
             const auto world = TakeWorld(player, false);
             auto       next = BuildMinimap(world, w, h);
-            next.alpha = shown * shown * (3.0f - 2.0f * shown);
+            next.alpha = shown * shown * (3.0f - 2.0f * shown) * s.minimapOpacity;  // the fade, times the opacity set
             {
                 std::scoped_lock lock(frameLock);
                 frame = std::move(next);
@@ -1294,6 +1442,25 @@ namespace MiniMap
             }
         }
 
+        // the legend's panel and icons (the names are text: DrawLegendNames); a hidden kind dimmed, the row under the
+        // cursor lit
+        void DrawLegend(Canvas& a_c, const Frame& a_f, float a_k)
+        {
+            const bool  vanilla = Settings::Map().look.style == 1;
+            const auto& show = Settings::Map().show;
+            const auto  l = LegendOf(a_f.mx1, a_f.my0, a_k);
+            a_c.Fill({ l.x0, l.y0 }, { l.x1, l.y1 }, vanilla ? Rgb(20, 19, 16, 215) : Rgb(10, 12, 18, 215));
+            a_c.Outline({ l.x0, l.y0 }, { l.x1, l.y1 }, vanilla ? Rgb(140, 138, 130) : Rgb(150, 120, 75), 1.0f * a_k);
+            const int under = l.At(a_f.cursorX, a_f.cursorY);
+            for (std::size_t i = 0; i < Icons::kCount; ++i) {
+                const float y = l.top + l.row * static_cast<float>(i);
+                if (static_cast<int>(i) == under) {
+                    a_c.Fill({ l.x0 + 3.0f * a_k, y }, { l.x1 - 3.0f * a_k, y + l.row }, Rgb(255, 255, 255, 30));
+                }
+                Icons::Draw(a_c, static_cast<Icons::Kind>(i), l.x0 + 24.0f * a_k, y + l.row * 0.5f, 22.0f * a_k, show[i] ? 1.0f : 0.3f);
+            }
+        }
+
         // the local map: the picture over the game's own (its bottom bar left free), the markers, a frame just inside
         // its edges (it fills the screen)
         void DrawLocal(Canvas& a_c, const Frame& a_f, float a_k)
@@ -1316,6 +1483,7 @@ namespace MiniMap
             } else {
                 a_c.Outline({ x0, y0 }, { x1, y1 }, Rgb(150, 120, 75), 1.5f * a_k);
             }
+            DrawLegend(a_c, a_f, a_k);
         }
 
         // the place's name over the local map (ImGui: the only text)
@@ -1335,6 +1503,50 @@ namespace MiniMap
             const V2    at{ (a_f.mx0 + a_f.mx1) * 0.5f - ts.x * kk * 0.5f, a_f.my0 + 18.0f * a_k };
             D::AddText(a_dl, font, size, V2{ at.x + 2.0f * a_k, at.y + 2.0f * a_k }, Rgb(0, 0, 0, 220), a_f.title.c_str());
             D::AddText(a_dl, font, size, at, vanilla ? Rgb(236, 232, 220) : Rgb(225, 230, 240), a_f.title.c_str());
+        }
+
+        // the keys, at the bottom: on to the world map, closed
+        void DrawHint(ImGui::ImDrawList* a_dl, const Frame& a_f, float a_k)
+        {
+            using V2 = ImGui::ImVec2;
+            namespace D = ImGui::ImDrawListManager;
+            const auto font = ImGui::GetFont();
+            if (!font) {
+                return;
+            }
+            const auto  text = std::format("M  {}        Esc  {}", Lang::T(Lang::S::HintWorld), Lang::T(Lang::S::HintClose));
+            const float base = ImGui::GetFontSize();
+            const float size = 24.0f * a_k;
+            const auto  ts = ImGui::CalcTextSize(text.c_str());
+            const float kk = base > 0.0f ? size / base : 1.0f;
+            const V2    at{ (a_f.mx0 + a_f.mx1) * 0.5f - ts.x * kk * 0.5f, a_f.my1 - 48.0f * a_k };
+            D::AddText(a_dl, font, size, V2{ at.x + 2.0f * a_k, at.y + 2.0f * a_k }, Rgb(0, 0, 0, 200), text.c_str());
+            D::AddText(a_dl, font, size, at, Rgb(225, 220, 205, 230), text.c_str());
+        }
+
+        // the legend's title and names (its panel and icons: DrawLegend)
+        void DrawLegendNames(ImGui::ImDrawList* a_dl, const Frame& a_f, float a_k)
+        {
+            using V2 = ImGui::ImVec2;
+            namespace D = ImGui::ImDrawListManager;
+            const auto font = ImGui::GetFont();
+            if (!font) {
+                return;
+            }
+            const auto& show = Settings::Map().show;
+            const auto  l = LegendOf(a_f.mx1, a_f.my0, a_k);
+            const float base = ImGui::GetFontSize();
+            const auto  text = [&](const char* a_text, float a_x, float a_cy, float a_size, ImGui::ImU32 a_col) {
+                const float kk = base > 0.0f ? a_size / base : 1.0f;
+                const float y = a_cy - ImGui::CalcTextSize(a_text).y * kk * 0.5f;
+                D::AddText(a_dl, font, a_size, V2{ a_x + 1.5f * a_k, y + 1.5f * a_k }, Rgb(0, 0, 0, 200), a_text);
+                D::AddText(a_dl, font, a_size, V2{ a_x, y }, a_col, a_text);
+            };
+            text(Lang::T(Lang::S::Legend), l.x0 + 14.0f * a_k, l.y0 + 24.0f * a_k, 24.0f * a_k, Rgb(236, 232, 220));
+            for (std::size_t i = 0; i < Icons::kCount; ++i) {
+                const float cy = l.top + l.row * (static_cast<float>(i) + 0.5f);
+                text(Icons::Name(static_cast<Icons::Kind>(i)), l.x0 + 46.0f * a_k, cy, 21.0f * a_k, show[i] ? Rgb(236, 232, 220) : Rgb(130, 126, 118));
+            }
         }
 
         // the name of the icon under the cursor, to its right, as the game's map has it
@@ -1425,6 +1637,8 @@ namespace MiniMap
                     }
                 }
                 DrawTitle(dl, f, k);
+                DrawHint(dl, f, k);
+                DrawLegendNames(dl, f, k);
                 DrawHoverName(dl, f, k);
                 return;
             }
@@ -1454,8 +1668,23 @@ namespace MiniMap
         {
             static void thunk(RE::MapMenu* a_this, float a_interval, std::uint32_t a_currentTime)
             {
+                if (overWorld && LocalMenuOpen()) {
+                    return;  // ours over it: the world map waits (no markers picked under our cursor, no sounds)
+                }
                 func(a_this, a_interval, a_currentTime);
                 UpdateMapMenu(a_this);
+            }
+            static inline REL::Relocation<decltype(thunk)> func;
+        };
+
+        // the map menu's handlers (moving, looking, zooming the world map, picking its markers; its local map key, L,
+        // which would switch it to the game's local map as ours closes on the same key): idle while ours is over it
+        template <int N>
+        struct MapHandlerHook
+        {
+            static bool thunk(RE::MenuEventHandler* a_this, RE::InputEvent* a_event)
+            {
+                return !(overWorld && LocalMenuOpen()) && func(a_this, a_event);
             }
             static inline REL::Relocation<decltype(thunk)> func;
         };
@@ -1469,7 +1698,7 @@ namespace MiniMap
             {
                 using Flag = RE::UI_MENU_FLAGS;
                 menuFlags.set(Flag::kPausesGame, Flag::kUsesCursor, Flag::kUsesMenuContext, Flag::kModal, Flag::kDisablePauseMenu, Flag::kCustomRendering);
-                depthPriority = 3;
+                depthPriority = 4;  // over the map menu (3) when opened on its world map
                 inputContext = Context::kMenuMode;
             }
 
@@ -1492,6 +1721,8 @@ namespace MiniMap
             if (const auto queue = RE::UIMessageQueue::GetSingleton()) {
                 queue->AddMessage(kLocalMenu, RE::UI_MESSAGE_TYPE::kHide, nullptr);
                 if (a_toWorldMap) {
+                    worldWanted = true;
+                    worldWait = 0;
                     queue->AddMessage(RE::MapMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kShow, nullptr);
                 }
             }
@@ -1524,6 +1755,14 @@ namespace MiniMap
             default:
                 return 0;
             }
+        }
+
+        // the game's own keys for the map (Quick Map) and for its world / local switch (LocalMap): from ours to the world map
+        bool WorldMapEvent(const RE::ButtonEvent* a_button)
+        {
+            const auto events = RE::UserEvents::GetSingleton();
+            const auto& name = a_button->QUserEvent();
+            return events && !name.empty() && (name == events->quickMap || name == events->localMap);
         }
 
         // what is held down now (the wheel never is)
@@ -1564,7 +1803,10 @@ namespace MiniMap
         {
             const auto& s = Settings::Map();
             const std::tuple<std::uint32_t, std::uint32_t, Action> binds[] = { { s.toggleKey, s.toggleMod, Action::kToggle }, { s.beamKey, s.beamMod, Action::kBeam },
-                { s.localMapKey, s.localMapMod, Action::kLocalMap }, { s.zoomInKey, s.zoomInMod, Action::kZoomIn }, { s.zoomOutKey, s.zoomOutMod, Action::kZoomOut } };
+                { s.localMapKey, s.localMapMod, Action::kLocalMap }, { s.zoomInKey, s.zoomInMod, Action::kZoomIn }, { s.zoomOutKey, s.zoomOutMod, Action::kZoomOut },
+                // the gamepad's own binds, working beside the keyboard's
+                { s.toggleKeyPad, s.toggleModPad, Action::kToggle }, { s.beamKeyPad, s.beamModPad, Action::kBeam }, { s.localMapKeyPad, s.localMapModPad, Action::kLocalMap },
+                { s.zoomInKeyPad, s.zoomInModPad, Action::kZoomIn }, { s.zoomOutKeyPad, s.zoomOutModPad, Action::kZoomOut } };
             std::optional<Action> alone;
             for (const auto& [key, mod, action] : binds) {
                 if (key == 0 || key != a_code) {
@@ -1628,17 +1870,40 @@ namespace MiniMap
                     }
                     if (code == kMouseBase) {
                         mouseHeld = button->IsPressed();
+                        mouseClicked = mouseClicked || (button->IsDown() && local.open);
                     } else if (button->IsDown() && (code == kWheelUp || code == kWheelDown) && local.open) {
                         wheel += code == kWheelUp ? 1 : -1;
                     }
                     // our local map up: closed by Esc, Tab, gamepad B or its own key; M goes on to the world map
+                    // over the map menu's world map: its own key or the map's keys go back to it, Esc closes both
                     if (!captureSlot && code != 0 && button->IsDown() && LocalMenuOpen()) {
-                        if (code == kEscape || code == 15 || code == kPadBase + 11 || ActionOf(code) == Action::kLocalMap) {
+                        const bool shut = code == kEscape || code == 15 || code == kPadBase + 11;
+                        const bool own = ActionOf(code) == Action::kLocalMap;
+                        const bool world = code == 50 || WorldMapEvent(button);
+                        if (overWorld) {
+                            if (own || world) {
+                                CloseLocalMenu(false);
+                                worldWanted = true;  // should the map menu switch to its local map on the same key: back to the world map
+                                worldWait = 0;
+                            } else if (shut) {
+                                CloseLocalMenu(false);
+                                if (const auto queue = RE::UIMessageQueue::GetSingleton()) {
+                                    queue->AddMessage(RE::MapMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+                                }
+                            }
+                        } else if (shut || own) {
                             CloseLocalMenu(false);
-                        } else if (code == 50) {
+                        } else if (world) {
                             CloseLocalMenu(true);
                         }
                         continue;
+                    }
+                    // its key on the map menu's world map: ours over it
+                    if (!captureSlot && code != 0 && button->IsDown() && s.enabled && s.localMap && ActionOf(code) == Action::kLocalMap) {
+                        if (const auto ui = RE::UI::GetSingleton(); ui && ui->IsMenuOpen(RE::MapMenu::MENU_NAME)) {
+                            OpenLocalMap(true);
+                            continue;
+                        }
                     }
                     if (captureSlot || !s.enabled || code == 0 || !InGameplay()) {
                         continue;
@@ -1722,6 +1987,9 @@ namespace MiniMap
 
             RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override
             {
+                if (a_event && a_event->menuName == RE::MapMenu::MENU_NAME && !a_event->opening) {
+                    mapSawWorld = false;  // opened again: from its first frame
+                }
                 if (a_event && a_event->menuName == RE::ContainerMenu::MENU_NAME) {
                     const auto ref = RE::TESObjectREFR::LookupByHandle(RE::ContainerMenu::GetTargetRefHandle());
                     if (ref && ref->Is(RE::FormType::ActorCharacter)) {
@@ -1758,12 +2026,21 @@ namespace MiniMap
         ControlsHook::func = controls.write_vfunc(0x1, ControlsHook::thunk);
         REL::Relocation<std::uintptr_t> map{ RE::VTABLE_MapMenu[0] };
         MapAdvanceHook::func = map.write_vfunc(0x5, MapAdvanceHook::thunk);
+        REL::Relocation<std::uintptr_t> mapMove{ RE::VTABLE_MapMoveHandler[0] }, mapLook{ RE::VTABLE_MapLookHandler[0] }, mapZoom{ RE::VTABLE_MapZoomHandler[0] };
+        MapHandlerHook<0>::func = mapMove.write_vfunc(0x1, MapHandlerHook<0>::thunk);
+        MapHandlerHook<1>::func = mapLook.write_vfunc(0x1, MapHandlerHook<1>::thunk);
+        MapHandlerHook<2>::func = mapZoom.write_vfunc(0x1, MapHandlerHook<2>::thunk);
+        REL::Relocation<std::uintptr_t> localInput{ RE::VTABLE_LocalMapMenu__InputHandler[0] };  // its L: the game's own local map
+        MapHandlerHook<3>::func = localInput.write_vfunc(0x1, MapHandlerHook<3>::thunk);
         logger::info("hooks installed");
     }
 
-    void StartCapture(std::uint32_t* a_slot, std::uint32_t* a_modSlot)
+    void StartCapture(std::uint32_t* a_slot, std::uint32_t* a_modSlot, std::uint32_t* a_padSlot, std::uint32_t* a_padModSlot)
     {
+        captureFirst = 0;
         captureMod = a_modSlot;
+        capturePad = a_padSlot;
+        capturePadMod = a_padModSlot;
         captureSlot = a_slot;
     }
 
@@ -1787,28 +2064,39 @@ namespace MiniMap
         if (code == kMouseBase || code == kMouseBase + 1) {
             return false;  // the clicks run the menu
         }
-        if (!button->IsDown() || code == 0) {
+        if (code == 0) {
             return true;
         }
-        if (code != kEscape) {  // Esc cancels
-            // a combination: whatever else is held now goes with it (not the menu's clicks)
-            std::uint32_t mod = 0;
-            {
-                std::scoped_lock lock(heldLock);
-                for (const auto h : held) {
-                    if (h != code && h != kMouseBase && h != kMouseBase + 1) {
-                        mod = h;
-                        break;
-                    }
-                }
-            }
-            *slot = code;
-            if (const auto modSlot = captureMod.load()) {
-                *modSlot = mod;
+        const auto bind = [&](std::uint32_t a_key, std::uint32_t a_mod) {
+            // a gamepad key into the gamepad's bind, anything else into the keyboard's: the other one stays
+            const bool pad = a_key >= kPadBase && capturePad.load();
+            *(pad ? capturePad.load() : slot) = a_key;
+            if (const auto modSlot = pad ? capturePadMod.load() : captureMod.load()) {
+                *modSlot = a_mod;
             }
             Settings::Save();
+            captureFirst = 0;
+            captureSlot = nullptr;
+        };
+        // the first key pressed waits: let go alone it is the bind; another pressed meanwhile (the wheel too) makes a
+        // combination with it held (Shift, then the wheel: Shift + Wheel Up)
+        const auto first = captureFirst.load();
+        if (button->IsDown()) {
+            if (code == kEscape) {  // Esc cancels: the bind as it was
+                captureFirst = 0;
+                captureSlot = nullptr;
+            } else if (first == 0) {
+                if (code == kWheelUp || code == kWheelDown) {
+                    bind(code, 0);  // never held: alone at once
+                } else {
+                    captureFirst = code;
+                }
+            } else if (code != first) {
+                bind(code, first);
+            }
+        } else if (button->IsUp() && code == first) {
+            bind(first, 0);
         }
-        captureSlot = nullptr;
         return true;
     }
 

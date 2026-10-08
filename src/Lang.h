@@ -75,6 +75,7 @@ namespace Lang
         Quests,
         Bodies,
         Plants,
+        Ores,
         // added later
         SecPosition,
         Anchor,
@@ -93,6 +94,15 @@ namespace Lang
         LocalMapKey,
         ZoomInKey,
         ZoomOutKey,
+        MinimapOpacity,
+        IconRange,
+        Everywhere,
+        ResetMap,
+        HintWorld,
+        HintClose,
+        Legend,
+        Unbind,
+        IconStyle,
         kCount
     };
 

@@ -4,12 +4,12 @@ An SKSE plugin for Skyrim Special Edition / Anniversary Edition: a detailed 3D m
 
 - Real geometry of the loaded cells: ground, houses, stairs, rocks, furniture, water, roads (from the navmesh).
 - Tilted view that turns with the camera (or stays north-up), square or round, in any corner of the screen at any offset.
-- Replaces the game's local map (in the map menu) with a large version of the same map: drag with the mouse, zoom with the wheel.
+- Replaces the game's local map (in the map menu) with a large version of the same map: drag with the mouse, zoom with the wheel; M goes on to the world map (indoors too), Esc closes it.
 - Cutaway: inside, what is above the character's head (ceilings, upper floors) is removed.
 - Two styles: colour (all colours configurable) and vanilla (the game's local map palette and frame).
-- Icons for enemies, guards, residents, followers, animals, doors, food, potions, chests, weapons, armour, loot, plants to pick, dead bodies (until you have looked into them) and quest targets (on the rim when off the map); each kind can be switched off. Merchants' hidden chests are left out.
+- Icons for enemies, guards, residents, followers, animals, doors, food, potions, chests, weapons, armour, loot, plants to pick, ore veins not mined out, dead bodies (until you have looked into them) and quest targets (on the rim when off the map); each kind can be switched off, and icons can be limited to things within a set distance. Merchants' hidden chests are left out. Two icon styles, Default (round badges) and Vanilla (like the game's map markers), picked in the menu; every folder in `Textures/DetailedMiniMap/icons` is a style, so a new folder with its own pictures (named as in `Default`) shows up as a new one.
 - A beam from the character to the nearest quest target, shown and hidden by its own key.
-- A key shows / hides the minimap with a fade.
+- A key shows / hides the minimap with a fade; its opacity can be set. The settings page resets to the defaults with one button.
 - Settings menu in nine languages (Russian, English, French, Italian, German, Spanish, Polish, Chinese (traditional), Japanese); the texts are plain files in `SKSE/Plugins/DetailedMiniMap/Translations`.
 
 ## Requirements

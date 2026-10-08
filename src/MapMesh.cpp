@@ -49,7 +49,42 @@ namespace MapMesh
         };
         std::uint64_t MeshKey(RE::FormID a_cell, std::uint32_t a_part) { return (static_cast<std::uint64_t>(a_cell) << 32) | a_part; }
 
-        // a mesh to read from the GPU (render thread); the shape is kept alive meanwhile
+        // a game buffer held while we use it: the shape alone does not keep it (a block of landscape let go frees its
+        // buffers while we may still copy them a few frames later)
+        struct BufferRef
+        {
+            ID3D11Buffer* p = nullptr;
+
+            BufferRef() = default;
+            explicit BufferRef(ID3D11Buffer* a_p) :
+                p(a_p)
+            {
+                if (p) {
+                    p->AddRef();
+                }
+            }
+            BufferRef(BufferRef&& a_o) noexcept :
+                p(std::exchange(a_o.p, nullptr)) {}
+            BufferRef& operator=(BufferRef&& a_o) noexcept
+            {
+                if (this != &a_o) {
+                    reset();
+                    p = std::exchange(a_o.p, nullptr);
+                }
+                return *this;
+            }
+            BufferRef(const BufferRef&) = delete;
+            BufferRef& operator=(const BufferRef&) = delete;
+            ~BufferRef() { reset(); }
+            void reset()
+            {
+                if (p) {
+                    std::exchange(p, nullptr)->Release();
+                }
+            }
+        };
+
+        // a mesh to read from the GPU (render thread); the shape and its buffers are kept alive meanwhile
         struct GpuJob
         {
             std::uint64_t                 key = 0;
@@ -59,9 +94,9 @@ namespace MapMesh
             RE::NiBound                   bound;
             std::uint32_t                 stride = 0, vertexCount = 0, triangleCount = 0;
             bool                          full = false;
-            ID3D11Buffer*                 vb = nullptr;
-            ID3D11Buffer*                 ib = nullptr;
-            const std::uint16_t*          rawIndices = nullptr;  // used when there (the shape's own copy)
+            BufferRef                     vb;
+            BufferRef                     ib;
+            std::vector<std::uint16_t>    rawIndices;  // the shape's own copy when there (taken now: it may go)
             int                           kind = kObjects;
             std::uint64_t                 lastSeen = 0;
             bool                          staged = false;  // part of a rebuild: goes to staging, not straight on the map
@@ -548,9 +583,12 @@ namespace MapMesh
             job.vertexCount = counts.vertexCount;
             job.triangleCount = counts.triangleCount;
             job.full = full;
-            job.vb = reinterpret_cast<ID3D11Buffer*>(data->vertexBuffer);
-            job.ib = reinterpret_cast<ID3D11Buffer*>(data->indexBuffer);
-            job.rawIndices = noCounts ? nullptr : data->rawIndexData;
+            job.vb = BufferRef(reinterpret_cast<ID3D11Buffer*>(data->vertexBuffer));
+            if (!noCounts && data->rawIndexData) {
+                job.rawIndices.assign(data->rawIndexData, data->rawIndexData + static_cast<std::size_t>(counts.triangleCount) * 3);
+            } else {
+                job.ib = BufferRef(reinterpret_cast<ID3D11Buffer*>(data->indexBuffer));
+            }
             job.kind = kind;
             job.serial = m.serial;
             a_p.jobs.push_back(std::move(job));
@@ -1046,7 +1084,9 @@ namespace MapMesh
                 while (p.next < p.shapes.size() && done < kBuildPerFrame) {
                     const auto shape = p.shapes[p.next++].get();
                     done += shape->GetTrishapeRuntimeData().triangleCount + 64;
-                    BuildShape(p, shape);
+                    if (shape->parent) {  // let go since the harvest: its renderer data may be gone with it
+                        BuildShape(p, shape);
+                    }
                 }
                 if (p.next < p.shapes.size()) {
                     break;
@@ -1198,7 +1238,7 @@ namespace MapMesh
                     continue;
                 }
                 HRESULT ir = E_FAIL;
-                if (SUCCEEDED(vr) && !job.rawIndices && p.ibCopy) {
+                if (SUCCEEDED(vr) && job.rawIndices.empty() && p.ibCopy) {
                     ir = a_context->Map(p.ibCopy, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &imap);
                     if (ir == DXGI_ERROR_WAS_STILL_DRAWING) {
                         a_context->Unmap(p.vbCopy, 0);
@@ -1210,7 +1250,7 @@ namespace MapMesh
                 if (SUCCEEDED(vr)) {
                     D3D11_BUFFER_DESC vd{};
                     p.vbCopy->GetDesc(&vd);
-                    const std::uint16_t* indices = job.rawIndices;
+                    const std::uint16_t* indices = job.rawIndices.empty() ? nullptr : job.rawIndices.data();
                     std::size_t          indexBytes = static_cast<std::size_t>(job.triangleCount) * 6;
                     if (!indices && SUCCEEDED(ir)) {
                         D3D11_BUFFER_DESC id{};
@@ -1238,7 +1278,7 @@ namespace MapMesh
                             logger::info("map 3d: GPU read '{}': {} verts, {} tris, stride {}, vb {} bytes, indices from {} -> {} -> {} triangles kept "
                                          "({} bad index, {} too long); bound r {:.0f} at ({:.0f} {:.0f} {:.0f}), mesh x {:.0f}..{:.0f} y {:.0f}..{:.0f}",
                                 job.keep ? job.keep->name.c_str() : "", job.vertexCount, job.triangleCount, job.stride, vd.ByteWidth,
-                                job.rawIndices ? "the CPU copy" : "the GPU", ok ? "decoded" : "NOT decoded", m->triangles, rejectedIndex, rejectedEdge, b.radius,
+                                !job.rawIndices.empty() ? "the CPU copy" : "the GPU", ok ? "decoded" : "NOT decoded", m->triangles, rejectedIndex, rejectedEdge, b.radius,
                                 b.center.x, b.center.y, b.center.z, m->minX, m->maxX, m->minY, m->maxY);
                         }
                         // a cell without landscape data gets a perfectly flat block at the world's default height: a
@@ -1279,6 +1319,9 @@ namespace MapMesh
 
             // new copies, read in a later frame
             const auto copyOf = [&](ID3D11Buffer* a_src) -> ID3D11Buffer* {
+                if (!a_src) {
+                    return nullptr;
+                }
                 D3D11_BUFFER_DESC d{};
                 a_src->GetDesc(&d);
                 D3D11_BUFFER_DESC s{ d.ByteWidth, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ, 0, 0 };
@@ -1292,8 +1335,10 @@ namespace MapMesh
             while (!jobs.empty() && inFlight.size() < kPerFrame) {
                 InFlight p{ std::move(jobs.front()) };
                 jobs.pop_front();
-                p.vbCopy = copyOf(p.job.vb);
-                p.ibCopy = p.job.rawIndices ? nullptr : copyOf(p.job.ib);
+                p.vbCopy = copyOf(p.job.vb.p);
+                p.ibCopy = p.job.rawIndices.empty() ? copyOf(p.job.ib.p) : nullptr;
+                p.job.vb.reset();  // copied: the game's own may go now
+                p.job.ib.reset();
                 inFlight.push_back(std::move(p));
             }
         }

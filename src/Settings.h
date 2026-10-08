@@ -10,6 +10,8 @@ namespace Settings
         // as SKSE counts them) and a key that must be held with it (0 = none)
         std::uint32_t toggleKey = 49;        // DirectInput scan code (49 = N): the minimap shown / hidden, fading (0 = none)
         std::uint32_t toggleMod = 0;
+        std::uint32_t toggleKeyPad = 0;     // ...and on the gamepad (both work; 0 = none)
+        std::uint32_t toggleModPad = 0;
         bool          visible = true;        // shown (the key switches it; remembered)
         int           language = -1;       // the menu's language (Lang order: ru en fr it de es pl zh ja); -1 = the game's
         float         minimapSize = 600.0f;  // pixels at 1080p
@@ -26,22 +28,32 @@ namespace Settings
         float         iconSize = 1.0f;       // scale of every icon
         float         iconFadeIn = 0.35f;    // seconds an icon takes to show up
         float         iconFadeOut = 0.35f;   // ...and to go once its thing is gone (picked up, dead, out of range)
-        std::array<bool, 15> show{ true, true, true, true, true, true, true, true, true, true, true, true, true, true, true };  // per icon kind (Icons::Kind order); the menu toggles them
+        float         iconRange = 0.0f;      // icons only for things this close to the character (world units; 0 = as far as the map shows; quests always)
+        float         minimapOpacity = 1.0f; // the whole minimap (picture, frame, icons) this opaque
+        std::array<bool, 16> show{ true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true };  // per icon kind (Icons::Kind order); the menu toggles them
         bool          cut = true;            // cut away what is over the character (roofs, ceilings)
         float         cutHeight = 80.0f;     // inside: geometry this far over the feet is cut away (roofs, ceilings)
         // quests
         bool          questBeam = true;      // a beam from the character to the nearest quest target
         std::uint32_t beamKey = 48;          // its key (48 = B; 0 = none): the beam shown / hidden
         std::uint32_t beamMod = 0;
+        std::uint32_t beamKeyPad = 0;     // ...and on the gamepad (both work; 0 = none)
+        std::uint32_t beamModPad = 0;
         // the game's local map (in the map menu) replaced by this one: dragged with the mouse, zoomed with the wheel
         bool          localMap = true;
         std::uint32_t localMapKey = 38;      // the key that opens the local map straight from the game (38 = L; 0 = none)
         std::uint32_t localMapMod = 0;
+        std::uint32_t localMapKeyPad = 0;     // ...and on the gamepad (both work; 0 = none)
+        std::uint32_t localMapModPad = 0;
         // the minimap's range (outside or inside, where the character is) zoomed in and out: Shift + the wheel
         std::uint32_t zoomInKey = 264;
         std::uint32_t zoomInMod = 42;
+        std::uint32_t zoomInKeyPad = 0;     // ...and on the gamepad (both work; 0 = none)
+        std::uint32_t zoomInModPad = 0;
         std::uint32_t zoomOutKey = 265;
         std::uint32_t zoomOutMod = 42;
+        std::uint32_t zoomOutKeyPad = 0;     // ...and on the gamepad (both work; 0 = none)
+        std::uint32_t zoomOutModPad = 0;
         bool          debugLog = false;      // a detailed log (timings, rebuilds, the reasons) in DetailedMiniMap.log
         // the look (the menu's second page; {} = the defaults)
         struct Look
@@ -66,6 +78,8 @@ namespace Settings
             bool  water = true;                               // lakes, rivers, the sea
             float waterColor[3] = { 0.146f, 0.392f, 0.637f };
             int   style = 1;                                  // 0 = the colours above, 1 = vanilla (the game's local map: sepia, its frame)
+            // the icons: a folder of Data/Textures/DetailedMiniMap/icons (every folder there is a style to pick)
+            std::string iconStyle = "Vanilla";
         } look;
     };
 
@@ -73,6 +87,8 @@ namespace Settings
 
     void Load();
     void Save();
+    void ResetMap();   // the map page to the defaults (DetailedMiniMap.ini, else the built-in ones); the language stays
+    void ResetLook();  // the look page to the defaults; the style stays
 
     std::string KeyName(std::uint32_t a_key);                       // for the menu
     std::string BindName(std::uint32_t a_key, std::uint32_t a_mod);  // "Left Shift + Wheel Up"

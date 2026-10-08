@@ -1,3 +1,4 @@
+#include "Icons.h"
 #include "MapMesh.h"
 #include "Menu.h"
 #include "Overlay.h"
@@ -41,6 +42,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
     SKSE::Init(a_skse);
     SetupLog();
     Settings::Load();
+    Icons::UseStyle(Settings::Map().look.iconStyle);
     MiniMap::Install();
     SKSE::GetMessagingInterface()->RegisterListener(OnMessage);
     return true;

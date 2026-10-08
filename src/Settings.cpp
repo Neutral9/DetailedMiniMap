@@ -28,10 +28,13 @@ namespace Settings
         }
 
         // the user ini overrides the default one key by key
-        float ReadFloat(const char* a_section, const char* a_key, float a_default)
+        float ReadFloat(const char* a_section, const char* a_key, float a_default, bool a_user = true)
         {
             char buf[64];
             for (const auto file : { "DetailedMiniMap.ini", "DetailedMiniMap_User.ini" }) {
+                if (!a_user && file != std::string_view("DetailedMiniMap.ini")) {
+                    break;
+                }
                 if (::GetPrivateProfileStringA(a_section, a_key, "", buf, sizeof(buf), IniPath(file).c_str()) > 0) {
                     try {
                         a_default = std::stof(buf);
@@ -51,21 +54,35 @@ namespace Settings
         // every setting once: read (with its range) or written
         struct Reader
         {
+            bool user = true;  // false: the shipped defaults only (a reset)
+
             void operator()(const char* a_section, const char* a_key, bool& a_value) const
             {
-                a_value = ReadFloat(a_section, a_key, a_value ? 1.0f : 0.0f) != 0.0f;
+                a_value = ReadFloat(a_section, a_key, a_value ? 1.0f : 0.0f, user) != 0.0f;
             }
             void operator()(const char* a_section, const char* a_key, float& a_value, float a_min, float a_max) const
             {
-                a_value = std::clamp(ReadFloat(a_section, a_key, a_value), a_min, a_max);
+                a_value = std::clamp(ReadFloat(a_section, a_key, a_value, user), a_min, a_max);
             }
             void operator()(const char* a_section, const char* a_key, int& a_value, int a_min, int a_max) const
             {
-                a_value = std::clamp(static_cast<int>(ReadFloat(a_section, a_key, static_cast<float>(a_value))), a_min, a_max);
+                a_value = std::clamp(static_cast<int>(ReadFloat(a_section, a_key, static_cast<float>(a_value), user)), a_min, a_max);
             }
             void operator()(const char* a_section, const char* a_key, std::uint32_t& a_value) const
             {
-                a_value = static_cast<std::uint32_t>(std::max(ReadFloat(a_section, a_key, static_cast<float>(a_value)), 0.0f));
+                a_value = static_cast<std::uint32_t>(std::max(ReadFloat(a_section, a_key, static_cast<float>(a_value), user), 0.0f));
+            }
+            void operator()(const char* a_section, const char* a_key, std::string& a_value) const
+            {
+                char buf[260];
+                for (const auto file : { "DetailedMiniMap.ini", "DetailedMiniMap_User.ini" }) {
+                    if (!user && file != std::string_view("DetailedMiniMap.ini")) {
+                        break;
+                    }
+                    if (::GetPrivateProfileStringA(a_section, a_key, "", buf, sizeof(buf), IniPath(file).c_str()) > 0) {
+                        a_value = buf;
+                    }
+                }
             }
         };
 
@@ -87,15 +104,20 @@ namespace Settings
             {
                 WriteFloat(a_section, a_key, static_cast<float>(a_value));
             }
+            void operator()(const char* a_section, const char* a_key, std::string& a_value) const
+            {
+                ::WritePrivateProfileStringA(a_section, a_key, a_value.c_str(), IniPath("DetailedMiniMap_User.ini").c_str());
+            }
         };
 
         template <class F>
-        void Each(F&& a_f)
+        void Each(F&& a_f, MapSettings& m = map)
         {
-            auto& m = map;
             a_f("Map", "Enabled", m.enabled);
             a_f("Map", "ToggleKey", m.toggleKey);
             a_f("Map", "ToggleMod", m.toggleMod);
+            a_f("Map", "ToggleKeyPad", m.toggleKeyPad);
+            a_f("Map", "ToggleModPad", m.toggleModPad);
             a_f("Map", "Visible", m.visible);
             a_f("Map", "Language", m.language, -1, Lang::kLanguages - 1);
             a_f("Map", "MinimapSize", m.minimapSize, 100.0f, 600.0f);
@@ -111,6 +133,8 @@ namespace Settings
             a_f("Map", "IconSize", m.iconSize, 0.4f, 3.0f);
             a_f("Map", "IconFadeIn", m.iconFadeIn, 0.0f, 3.0f);
             a_f("Map", "IconFadeOut", m.iconFadeOut, 0.0f, 3.0f);
+            a_f("Map", "IconRange", m.iconRange, 0.0f, 20000.0f);
+            a_f("Map", "MinimapOpacity", m.minimapOpacity, 0.1f, 1.0f);
             for (std::size_t i = 0; i < m.show.size(); ++i) {
                 const std::string key = std::string("Show_") + Icons::File(static_cast<Icons::Kind>(i));
                 a_f("Icons", key.c_str(), m.show[i]);
@@ -120,13 +144,21 @@ namespace Settings
             a_f("Map", "QuestBeam", m.questBeam);
             a_f("Map", "BeamKey", m.beamKey);
             a_f("Map", "BeamMod", m.beamMod);
+            a_f("Map", "BeamKeyPad", m.beamKeyPad);
+            a_f("Map", "BeamModPad", m.beamModPad);
             a_f("Map", "LocalMap", m.localMap);
             a_f("Map", "LocalMapKey", m.localMapKey);
             a_f("Map", "LocalMapMod", m.localMapMod);
+            a_f("Map", "LocalMapKeyPad", m.localMapKeyPad);
+            a_f("Map", "LocalMapModPad", m.localMapModPad);
             a_f("Map", "ZoomInKey", m.zoomInKey);
             a_f("Map", "ZoomInMod", m.zoomInMod);
+            a_f("Map", "ZoomInKeyPad", m.zoomInKeyPad);
+            a_f("Map", "ZoomInModPad", m.zoomInModPad);
             a_f("Map", "ZoomOutKey", m.zoomOutKey);
             a_f("Map", "ZoomOutMod", m.zoomOutMod);
+            a_f("Map", "ZoomOutKeyPad", m.zoomOutKeyPad);
+            a_f("Map", "ZoomOutModPad", m.zoomOutModPad);
             a_f("Map", "DebugLog", m.debugLog);
 
             auto& l = m.look;
@@ -145,6 +177,7 @@ namespace Settings
             a_f("MapLook", "RoadWidth", l.roadWidth, 1.0f, 3.0f);
             a_f("MapLook", "Water", l.water);
             a_f("MapLook", "Style", l.style, 0, 1);
+            a_f("MapLook", "IconStyle", l.iconStyle);
             static const std::string channels[] = { "R", "G", "B" };
             for (int i = 0; i < 3; ++i) {
                 const auto& c = channels[i];
@@ -171,6 +204,37 @@ namespace Settings
     {
         Each(Writer{});
         ApplyLog();
+    }
+
+    // the defaults: built in, then the shipped DetailedMiniMap.ini over them (not the user's own)
+    namespace
+    {
+        MapSettings Defaults()
+        {
+            MapSettings d;
+            Each(Reader{ false }, d);
+            return d;
+        }
+    }
+
+    void ResetMap()
+    {
+        auto       d = Defaults();
+        d.language = map.language;
+        d.look = map.look;
+        map = d;
+        Save();
+    }
+
+    void ResetLook()
+    {
+        // the map's style and the icons' stay (chosen, not tuned)
+        const int  style = map.look.style;
+        const auto icons = map.look.iconStyle;
+        map.look = Defaults().look;
+        map.look.style = style;
+        map.look.iconStyle = icons;
+        Save();
     }
 
     std::string KeyName(std::uint32_t a_key)

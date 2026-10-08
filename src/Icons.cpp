@@ -37,30 +37,51 @@ namespace Icons
             { "quest", 0x21, 255, 200, 60 },
             { "body", 0xF714, 175, 170, 160 },
             { "flora", 0xF06C, 120, 200, 90 },
+            { "ore", 0xF3A5, 165, 180, 205 },
         };
         static_assert(std::size(kStyles) == kCount);
+
+        constexpr const char* kFolder = R"(Data\Textures\DetailedMiniMap\icons)";
+        constexpr const char* kDefaultStyle = "Default";  // the badges: every picture there
 
         constexpr ImGui::ImU32 Rgb(int r, int g, int b, int a)
         {
             return (static_cast<ImGui::ImU32>(a) << 24) | (static_cast<ImGui::ImU32>(b) << 16) | (static_cast<ImGui::ImU32>(g) << 8) | static_cast<ImGui::ImU32>(r);
         }
 
-        // the textures, loaded on first use (0 = no file: the fallback)
-        ImGui::ImTextureID Texture(Kind a_kind)
+        // the style in use (the menu thread sets it, the main and render threads draw with it) and every picture
+        // loaded so far, by path (a style switched back to is not loaded again); nullptr = no file there
+        std::mutex                                          lock;
+        std::string                                         style = kDefaultStyle;
+        std::unordered_map<std::string, ImGui::ImTextureID> loaded;
+
+        ImGui::ImTextureID Load(const std::string& a_path)  // under lock
         {
-            static std::array<ImGui::ImTextureID, kCount> cache{};
-            static std::array<bool, kCount>               tried{};
-            const auto                                    i = static_cast<std::size_t>(a_kind);
-            if (!tried[i]) {
-                tried[i] = true;
-                const auto path = std::format(R"(Data\Textures\DetailedMiniMap\icons\{}.dds)", kStyles[i].file);
-                cache[i] = SKSEMenuFramework::LoadTexture(path);
-                if (!cache[i]) {
-                    logger::warn("icons: '{}' did not load, a drawn badge instead", path);
+            const auto [it, added] = loaded.try_emplace(a_path, nullptr);
+            if (added && std::filesystem::exists(a_path)) {
+                it->second = SKSEMenuFramework::LoadTexture(a_path);
+                if (!it->second) {
+                    logger::warn("icons: '{}' did not load", a_path);
                 }
             }
-            return cache[i];
+            return it->second;
         }
+
+        // a picture of the style in use; one it lacks from the default style, then from the icons folder itself (where
+        // older versions kept them); nullptr: a drawn badge
+        ImGui::ImTextureID Texture(const char* a_file)
+        {
+            std::scoped_lock guard(lock);
+            for (const auto& folder : { style, std::string(kDefaultStyle), std::string() }) {
+                const auto path = folder.empty() ? std::format(R"({}\{}.dds)", kFolder, a_file) : std::format(R"({}\{}\{}.dds)", kFolder, folder, a_file);
+                if (const auto tex = Load(path)) {
+                    return tex;
+                }
+            }
+            return nullptr;
+        }
+
+        ImGui::ImTextureID Texture(Kind a_kind) { return Texture(kStyles[static_cast<std::size_t>(a_kind)].file); }
 
         void Sword(Canvas& a_c, float a_x, float a_y, float a_s, Canvas::Color a_col)
         {
@@ -97,6 +118,25 @@ namespace Icons
         return kStyles[static_cast<std::size_t>(a_kind)].file;
     }
 
+    std::vector<std::string> Styles()
+    {
+        std::vector<std::string> out;
+        std::error_code          error;
+        for (const auto& entry : std::filesystem::directory_iterator(kFolder, error)) {
+            if (entry.is_directory(error)) {
+                out.push_back(entry.path().filename().string());
+            }
+        }
+        std::ranges::sort(out);
+        return out;
+    }
+
+    void UseStyle(const std::string& a_style)
+    {
+        std::scoped_lock guard(lock);
+        style = a_style.empty() ? kDefaultStyle : a_style;
+    }
+
     void Draw(Canvas& a_canvas, Kind a_kind, float a_x, float a_y, float a_size, float a_alpha, float a_shade)
     {
         const int alpha = static_cast<int>(255.0f * std::clamp(a_alpha, 0.0f, 1.0f));
@@ -118,15 +158,7 @@ namespace Icons
     void DrawPlayer(Canvas& a_canvas, float a_x, float a_y, float a_size, float a_angle, float a_alpha)
     {
         const auto                A = [&](int a_a) { return static_cast<int>(static_cast<float>(a_a) * std::clamp(a_alpha, 0.0f, 1.0f)); };
-        static ImGui::ImTextureID tex = nullptr;
-        static bool               tried = false;
-        if (!tried) {
-            tried = true;
-            tex = SKSEMenuFramework::LoadTexture(R"(Data\Textures\DetailedMiniMap\icons\player.dds)");
-            if (!tex) {
-                logger::warn("icons: 'player.dds' did not load, a drawn badge instead");
-            }
-        }
+        const auto                tex = Texture("player");
         const float r = a_size * 0.5f;
         // the pointer first, under the badge: a dark outline, then gold, its tip a bit past the rim
         const auto at = [&](float a_a, float a_d) { return Canvas::V2{ a_x + std::sin(a_angle + a_a) * a_d, a_y - std::cos(a_angle + a_a) * a_d }; };

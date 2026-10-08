@@ -35,15 +35,34 @@ namespace Menu
             }
         }
 
-        // "label: [key]" - a click waits for the next key press, a combination if another key is held then (Esc cancels)
-        void KeyButton(const char* a_label, std::uint32_t& a_key, std::uint32_t& a_mod, const char* a_id)
+        // "label: [key | gamepad key]" - a click waits for the next key press, a combination if another key is held then
+        // (Esc cancels); a gamepad key goes into the gamepad's bind, any other into the keyboard's - both work
+        void KeyButton(const char* a_label, std::uint32_t& a_key, std::uint32_t& a_mod, std::uint32_t& a_padKey, std::uint32_t& a_padMod, const char* a_id)
         {
             ImGui::Text("%s", a_label);
             ImGui::SameLine();
-            const auto label = MiniMap::IsCapturing(&a_key) ? std::string(Lang::T(Lang::S::PressKey)) : Settings::BindName(a_key, a_mod);
-            if (ImGui::Button(std::format("{}###{}", label, a_id).c_str(), ImGui::ImVec2{ 240.0f, 0.0f })) {
-                MiniMap::StartCapture(&a_key, &a_mod);
+            const bool waiting = MiniMap::IsCapturing(&a_key);
+            std::string label;
+            if (waiting) {
+                label = Lang::T(Lang::S::PressKey);
+            } else if (a_key != 0 && a_padKey != 0) {
+                label = std::format("{}  |  {}", Settings::BindName(a_key, a_mod), Settings::BindName(a_padKey, a_padMod));
+            } else {
+                label = a_padKey != 0 ? Settings::BindName(a_padKey, a_padMod) : Settings::BindName(a_key, a_mod);
             }
+            if (ImGui::Button(std::format("{}###{}", label, a_id).c_str(), ImGui::ImVec2{ 360.0f, 0.0f })) {
+                // a second click: no longer waiting, the binds as they were
+                waiting ? MiniMap::StartCapture(nullptr, nullptr) : MiniMap::StartCapture(&a_key, &a_mod, &a_padKey, &a_padMod);
+            }
+            // no key at all, on either device: the action off
+            ImGui::SameLine();
+            ImGui::BeginDisabled(a_key == 0 && a_padKey == 0 && !waiting);
+            if (ImGui::Button(std::format("{}###unbind{}", Lang::T(Lang::S::Unbind), a_id).c_str())) {
+                MiniMap::StartCapture(nullptr, nullptr);
+                a_key = a_mod = a_padKey = a_padMod = 0;
+                Settings::Save();
+            }
+            ImGui::EndDisabled();
         }
 
         void Color(const char* a_label, float* a_rgb)
@@ -82,10 +101,10 @@ namespace Menu
                 }
             }
             Check(Lang::L(S::Enabled).c_str(), m.enabled);
-            KeyButton(Lang::T(S::ToggleKey), m.toggleKey, m.toggleMod, "toggle");
+            KeyButton(Lang::T(S::ToggleKey), m.toggleKey, m.toggleMod, m.toggleKeyPad, m.toggleModPad, "toggle");
             Check(Lang::L(S::LocalMap).c_str(), m.localMap);
             if (m.localMap) {
-                KeyButton(Lang::T(S::LocalMapKey), m.localMapKey, m.localMapMod, "localmap");
+                KeyButton(Lang::T(S::LocalMapKey), m.localMapKey, m.localMapMod, m.localMapKeyPad, m.localMapModPad, "localmap");
             }
 
             ImGui::SeparatorText(Lang::T(S::SecMinimap));
@@ -104,9 +123,10 @@ namespace Menu
             Slider(S::Size, m.minimapSize, 100.0f, 600.0f, "%.0f");
             Slider(S::RangeOutside, m.minimapRange, 300.0f, 12000.0f, "%.0f", true);
             Slider(S::RangeInside, m.minimapRangeInside, 300.0f, 12000.0f, "%.0f", true);
-            KeyButton(Lang::T(S::ZoomInKey), m.zoomInKey, m.zoomInMod, "zoomin");
-            KeyButton(Lang::T(S::ZoomOutKey), m.zoomOutKey, m.zoomOutMod, "zoomout");
+            KeyButton(Lang::T(S::ZoomInKey), m.zoomInKey, m.zoomInMod, m.zoomInKeyPad, m.zoomInModPad, "zoomin");
+            KeyButton(Lang::T(S::ZoomOutKey), m.zoomOutKey, m.zoomOutMod, m.zoomOutKeyPad, m.zoomOutModPad, "zoomout");
             Slider(S::Tilt, m.minimapTilt, 20.0f, 90.0f, "%.0f");
+            Slider(S::MinimapOpacity, m.minimapOpacity, 0.1f, 1.0f, "%.2f");
 
             ImGui::SeparatorText(Lang::T(S::SecPosition));
             {
@@ -122,6 +142,7 @@ namespace Menu
             Slider(S::IconSize, m.iconSize, 0.4f, 3.0f, "%.2f");
             Slider(S::IconFadeIn, m.iconFadeIn, 0.0f, 3.0f, m.iconFadeIn > 0.0f ? "%.2f" : Lang::T(S::AtOnce));
             Slider(S::IconFadeOut, m.iconFadeOut, 0.0f, 3.0f, m.iconFadeOut > 0.0f ? "%.2f" : Lang::T(S::AtOnce));
+            Slider(S::IconRange, m.iconRange, 0.0f, 20000.0f, m.iconRange > 0.0f ? "%.0f" : Lang::T(S::Everywhere));
             for (std::size_t i = 0; i < m.show.size(); ++i) {
                 bool on = m.show[i];
                 if (ImGui::Checkbox(std::format("{}###show{}", Icons::Name(static_cast<Icons::Kind>(i)), i).c_str(), &on)) {
@@ -139,10 +160,16 @@ namespace Menu
 
             ImGui::SeparatorText(Lang::T(S::SecQuests));
             Check(Lang::L(S::QuestBeam).c_str(), m.questBeam);
-            KeyButton(Lang::T(S::BeamKey), m.beamKey, m.beamMod, "beam");
+            KeyButton(Lang::T(S::BeamKey), m.beamKey, m.beamMod, m.beamKeyPad, m.beamModPad, "beam");
 
             ImGui::SeparatorText(Lang::T(S::SecDebug));
             Check(Lang::L(S::DebugLog).c_str(), m.debugLog);
+
+            ImGui::Separator();
+            if (ImGui::Button(Lang::L(S::ResetMap).c_str())) {
+                MiniMap::StartCapture(nullptr, nullptr);  // a bind being waited for: no more
+                Settings::ResetMap();
+            }
         }
 
         void __stdcall RenderLook()
@@ -153,6 +180,23 @@ namespace Menu
                 const char* styles[] = { Lang::T(S::StyleColour), Lang::T(S::StyleVanilla) };
                 if (ImGui::Combo(Lang::L(S::Style).c_str(), &l.style, styles, 2)) {
                     Settings::Save();
+                }
+            }
+            {
+                // the icons' styles: the folders found when the list opens (a new one shows without a restart)
+                static std::vector<std::string> found;
+                if (ImGui::BeginCombo(Lang::L(S::IconStyle).c_str(), l.iconStyle.c_str())) {
+                    if (found.empty() || ImGui::IsWindowAppearing()) {
+                        found = Icons::Styles();
+                    }
+                    for (const auto& name : found) {
+                        if (ImGui::Selectable(name.c_str(), name == l.iconStyle)) {
+                            l.iconStyle = name;
+                            Icons::UseStyle(name);
+                            Settings::Save();
+                        }
+                    }
+                    ImGui::EndCombo();
                 }
             }
             const bool colour = l.style == 0;  // the vanilla style has its own palette: no colours to set
@@ -196,10 +240,7 @@ namespace Menu
             Slider(S::DepthShade, l.depthShade, 0.0f, 1.0f, "%.2f");
             Slider(S::FadeTime, l.fadeTime, 0.0f, 3.0f, "%.2f");
             if (ImGui::Button(Lang::L(S::ResetLook).c_str())) {
-                const int style = l.style;  // the style stays
-                l = {};
-                l.style = style;
-                Settings::Save();
+                Settings::ResetLook();
             }
         }
 

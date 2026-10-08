@@ -1,8 +1,10 @@
-// Makes the map icons: dist/Textures/DetailedMiniMap/icons/<name>.dds (128 x 128 BGRA, full mip chain).
-// A dark round badge, a coloured rim, a Font Awesome 6 Free Solid glyph (the font SKSE Menu Framework ships;
-// icons CC BY 4.0, fontawesome.com) or, for the weapon, a drawn sword.
-//   java tools/MakeIcons.java "<path to fa-solid-900.ttf>" dist
-// Any of the files can be replaced by an own DDS of any size (square, transparent background).
+// Makes the map icons: dist/Textures/DetailedMiniMap/icons/<style>/<name>.dds (128 x 128 BGRA, full mip chain), two
+// styles: Default (a dark round badge, a coloured rim) and Vanilla (a parchment-white silhouette in a dark outline, as
+// the game's map markers), each with a Font Awesome 6 Free Solid glyph (the font SKSE Menu Framework ships; icons
+// CC BY 4.0, fontawesome.com) or, for the weapon, a drawn sword.
+//   java tools/MakeIcons.java "<path to fa-solid-900.ttf>" dist [<folder for PNG previews>]
+// Any of the files can be replaced by an own DDS of any size (square, transparent background); a new folder next to
+// these is a new style the menu offers.
 import java.awt.*;
 import java.awt.font.GlyphVector;
 import java.awt.geom.*;
@@ -30,47 +32,83 @@ public class MakeIcons {
         new Icon("quest", 0x21, 255, 200, 60),
         new Icon("body", 0xF714, 175, 170, 160),
         new Icon("flora", 0xF06C, 120, 200, 90),
+        new Icon("ore", 0xF3A5, 165, 180, 205),
         new Icon("player", 0xF007, 255, 210, 90),  // the character (drawn upright; the map adds a pointer on its rim)
     };
     static final int S = 128;
 
     public static void main(String[] a) throws Exception {
         Font fa = Font.createFont(Font.TRUETYPE_FONT, new File(a[0]));
-        Path out = Paths.get(a[1], "Textures", "DetailedMiniMap", "icons");
-        Files.createDirectories(out);
-        for (Icon icon : ICONS) {
-            BufferedImage img = new BufferedImage(S, S, BufferedImage.TYPE_INT_ARGB);
-            Graphics2D g = img.createGraphics();
-            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
-            Color col = new Color(icon.r, icon.g, icon.b);
-            double ring = 9, r = S / 2.0 - ring / 2 - 1;
-            g.setColor(new Color(10, 12, 18, 215));
-            g.fill(new Ellipse2D.Double(S / 2.0 - r, S / 2.0 - r, 2 * r, 2 * r));
-            g.setColor(col);
-            g.setStroke(new BasicStroke((float) ring));
-            g.draw(new Ellipse2D.Double(S / 2.0 - r, S / 2.0 - r, 2 * r, 2 * r));
-            Shape shape = icon.glyph != 0 ?
-                fa.deriveFont(100f).createGlyphVector(g.getFontRenderContext(), new String(Character.toChars(icon.glyph))).getOutline() :
-                sword();
-            // centred optically: between the outline's box and its ink's centre of mass (a paw's heavy pad, a
-            // flask's wide bottom pull the eye); scaled to a 64 px box and to stay well inside the rim
-            Rectangle2D b = shape.getBounds2D();
-            double[] mass = centroid(shape);
-            double cx = b.getCenterX() * 0.55 + mass[0] * 0.45, cy = b.getCenterY() * 0.55 + mass[1] * 0.45;
-            double reach = farthest(shape, cx, cy);
-            double k = Math.min(64.0 / Math.max(b.getWidth(), b.getHeight()), (r - ring / 2) * 0.80 / reach);
-            AffineTransform t = new AffineTransform();
-            t.translate(S / 2.0, S / 2.0);
-            t.scale(k, k);
-            t.translate(-cx, -cy);
-            g.setColor(col);
-            g.fill(t.createTransformedShape(shape));
-            g.dispose();
-            writeDds(img, out.resolve(icon.name + ".dds"));
-            if (a.length > 2) javax.imageio.ImageIO.write(img, "png", new File(a[2], icon.name + ".png"));  // previews
-            System.out.println(out.resolve(icon.name + ".dds"));
+        Path icons = Paths.get(a[1], "Textures", "DetailedMiniMap", "icons");
+        for (String style : new String[] { "Default", "Vanilla" }) {
+            Path out = icons.resolve(style);
+            Files.createDirectories(out);
+            for (Icon icon : ICONS) {
+                BufferedImage img = new BufferedImage(S, S, BufferedImage.TYPE_INT_ARGB);
+                Graphics2D g = img.createGraphics();
+                g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
+                Shape shape = icon.glyph != 0 ?
+                    fa.deriveFont(100f).createGlyphVector(g.getFontRenderContext(), new String(Character.toChars(icon.glyph))).getOutline() :
+                    sword();
+                if (style.equals("Default")) {
+                    badge(g, icon, shape);
+                } else {
+                    vanilla(g, icon, shape);
+                }
+                g.dispose();
+                writeDds(img, out.resolve(icon.name + ".dds"));
+                if (a.length > 2) {  // previews
+                    Files.createDirectories(Paths.get(a[2], style));
+                    javax.imageio.ImageIO.write(img, "png", Paths.get(a[2], style, icon.name + ".png").toFile());
+                }
+                System.out.println(out.resolve(icon.name + ".dds"));
+            }
         }
+    }
+
+    // the glyph centred optically: between the outline's box and its ink's centre of mass (a paw's heavy pad, a
+    // flask's wide bottom pull the eye), scaled to a_box px and to reach no farther than a_reach from the middle
+    static Shape place(Shape a_shape, double a_box, double a_reach) {
+        Rectangle2D b = a_shape.getBounds2D();
+        double[] mass = centroid(a_shape);
+        double cx = b.getCenterX() * 0.55 + mass[0] * 0.45, cy = b.getCenterY() * 0.55 + mass[1] * 0.45;
+        double k = Math.min(a_box / Math.max(b.getWidth(), b.getHeight()), a_reach / farthest(a_shape, cx, cy));
+        AffineTransform t = new AffineTransform();
+        t.translate(S / 2.0, S / 2.0);
+        t.scale(k, k);
+        t.translate(-cx, -cy);
+        return t.createTransformedShape(a_shape);
+    }
+
+    // Default: a dark round badge, a coloured rim, the glyph in the kind's colour
+    static void badge(Graphics2D g, Icon icon, Shape shape) {
+        Color col = new Color(icon.r, icon.g, icon.b);
+        double ring = 9, r = S / 2.0 - ring / 2 - 1;
+        g.setColor(new Color(10, 12, 18, 215));
+        g.fill(new Ellipse2D.Double(S / 2.0 - r, S / 2.0 - r, 2 * r, 2 * r));
+        g.setColor(col);
+        g.setStroke(new BasicStroke((float) ring));
+        g.draw(new Ellipse2D.Double(S / 2.0 - r, S / 2.0 - r, 2 * r, 2 * r));
+        g.setColor(col);
+        g.fill(place(shape, 64, (r - ring / 2) * 0.80));
+    }
+
+    // Vanilla: as the game's own map markers - no badge, a parchment-white silhouette (the kind's colour only a
+    // hint of it), a dark ink outline and a soft shadow under it
+    static void vanilla(Graphics2D g, Icon icon, Shape shape) {
+        Shape s = place(shape, 92, S / 2.0 - 12);
+        double mix = icon.name.equals("enemy") || icon.name.equals("quest") ? 0.6 : 0.3;  // the ones to find at a glance
+        Color col = new Color((int) Math.round(232 + (icon.r - 232) * mix), (int) Math.round(226 + (icon.g - 226) * mix), (int) Math.round(208 + (icon.b - 208) * mix));
+        BasicStroke edge = new BasicStroke(11, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
+        Shape shadow = AffineTransform.getTranslateInstance(3, 4).createTransformedShape(s);
+        g.setColor(new Color(0, 0, 0, 110));
+        g.fill(edge.createStrokedShape(shadow));
+        g.fill(shadow);
+        g.setColor(new Color(24, 20, 14, 240));
+        g.fill(edge.createStrokedShape(s));
+        g.setColor(col);
+        g.fill(s);
     }
 
     // a sword along the diagonal, point up right, as one outline (centred like a glyph)
