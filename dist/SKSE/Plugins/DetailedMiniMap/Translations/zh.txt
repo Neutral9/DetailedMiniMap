@@ -84,3 +84,4 @@ BeamKey = 顯示／隱藏光束：
 LocalMap = 以此地圖取代區域地圖
 SecDebug = 診斷
 DebugLog = 詳細記錄（DetailedMiniMap.log）
+LocalMapKey = 開啟區域地圖：

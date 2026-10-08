@@ -97,7 +97,7 @@ namespace Icons
         return kStyles[static_cast<std::size_t>(a_kind)].file;
     }
 
-    void Draw(Canvas& a_canvas, Kind a_kind, float a_x, float a_y, float a_size, float a_alpha)
+    void Draw(Canvas& a_canvas, Kind a_kind, float a_x, float a_y, float a_size, float a_alpha, float a_shade)
     {
         const int alpha = static_cast<int>(255.0f * std::clamp(a_alpha, 0.0f, 1.0f));
         if (alpha <= 0) {
@@ -108,7 +108,8 @@ namespace Icons
             // pixels the small picture is resampled lopsided)
             const float size = std::max(std::round(a_size * 0.5f) * 2.0f, 4.0f);
             const float x0 = std::round(a_x - size * 0.5f), y0 = std::round(a_y - size * 0.5f);
-            a_canvas.Image(tex, { x0, y0 }, { x0 + size, y0 + size }, Rgb(255, 255, 255, alpha));
+            const int lit = static_cast<int>(255.0f * std::clamp(a_shade, 0.0f, 1.0f));
+            a_canvas.Image(tex, { x0, y0 }, { x0 + size, y0 + size }, Rgb(lit, lit, lit, alpha));
             return;
         }
         Fallback(a_canvas, a_kind, a_x, a_y, a_size, alpha);

@@ -84,3 +84,4 @@ BeamKey = ビームの表示／非表示：
 LocalMap = ローカルマップの代わりにこのマップを使う
 SecDebug = 診断
 DebugLog = 詳細ログ（DetailedMiniMap.log）
+LocalMapKey = ローカルマップを開く：

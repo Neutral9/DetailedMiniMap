@@ -90,6 +90,7 @@ namespace Lang
         LocalMap,
         SecDebug,
         DebugLog,
+        LocalMapKey,
         kCount
     };
 

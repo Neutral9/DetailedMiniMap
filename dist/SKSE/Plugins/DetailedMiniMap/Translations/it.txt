@@ -84,3 +84,4 @@ BeamKey = Mostra / nascondi raggio:
 LocalMap = Usa questa mappa al posto della mappa locale
 SecDebug = Diagnostica
 DebugLog = Log dettagliato (DetailedMiniMap.log)
+LocalMapKey = Apri la mappa locale:

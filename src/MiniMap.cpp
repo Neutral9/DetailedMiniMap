@@ -317,6 +317,7 @@ namespace MiniMap
         {
             RE::ObjectRefHandle ref;  // followed every frame (a target walking about)
             RE::NiPoint3        pos;
+            std::string         name;  // the quest's
         };
         std::vector<QuestPoint> quests;  // main thread: gathered with the statics
 
@@ -368,7 +369,7 @@ namespace MiniMap
                     }
                 }
                 if (at) {
-                    quests.push_back({ at->CreateRefHandle(), at->GetPosition() });
+                    quests.push_back({ at->CreateRefHandle(), at->GetPosition(), quest->GetFullName() ? quest->GetFullName() : "" });
                 }
             }
         }
@@ -524,7 +525,15 @@ namespace MiniMap
             float x, y;
             Kind  kind;
             float alpha;
+            float      shade = 1.0f;  // darker on another level than the character's
+            RE::FormID id = 0;         // the reference (a quest target: its index in quests)
         };
+        // on another level than the character (an upper floor, a cellar, a ledge above): dimmer the farther up or down
+        float LevelShade(float a_dz)
+        {
+            return 1.0f - 0.6f * std::clamp((std::abs(a_dz) - 200.0f) / 400.0f, 0.0f, 1.0f);
+        }
+
         struct Frame
         {
             bool                         has = false;
@@ -540,6 +549,9 @@ namespace MiniMap
             float                        alpha = 1.0f;   // the whole map: fading in or out
             float                        cursorX = -1.0f, cursorY = -1.0f;  // the local map: the menu's cursor (drawn over the map)
             std::string                  title;          // the local map: where the character is
+            int                          hover = -1;     // the local map: the icon under the cursor (in icons, or in quests)
+            bool                         hoverQuest = false;
+            std::string                  hoverName;      // ...and what it is (a door: where it leads)
             std::optional<MapMesh::View> view;
         };
         std::mutex frameLock;
@@ -634,7 +646,7 @@ namespace MiniMap
                 }
                 const auto [x, y] = a_toScreen(m.pos);
                 if (const float edge = a_inside(x, y); edge > 0.0f) {
-                    a_f.icons.push_back({ x, y, m.kind, m.alpha * edge });
+                    a_f.icons.push_back({ x, y, m.kind, m.alpha * edge, LevelShade(m.pos.z - a_world.player.z), m.id });
                 }
             }
             if (!Shown(Kind::kQuest) && !Settings::Map().questBeam) {
@@ -642,10 +654,11 @@ namespace MiniMap
             }
             float                       nearest = FLT_MAX;
             std::optional<RE::NiPoint3> target;
-            for (const auto& q : a_world.quests) {
+            for (std::size_t i = 0; i < a_world.quests.size(); ++i) {
+                const auto& q = a_world.quests[i];
                 const auto [x, y] = a_rim(a_toScreen(q));
                 if (Shown(Kind::kQuest)) {
-                    a_f.quests.push_back({ x, y, Kind::kQuest, 1.0f });
+                    a_f.quests.push_back({ x, y, Kind::kQuest, 1.0f, LevelShade(q.z - a_world.player.z), static_cast<RE::FormID>(i) });
                 }
                 const float dx = q.x - a_world.player.x, dy = q.y - a_world.player.y, d = dx * dx + dy * dy;
                 if (Settings::Map().questBeam && d < nearest) {
@@ -855,6 +868,111 @@ namespace MiniMap
 
         bool vanillaHidden = false;  // the game's local map clip hidden by us
 
+        // the local map opened from the game by its key: the map menu opened, then switched to the local map as its
+        // own key (the "LocalMap" control) does - pressed once its controls are up, released if pressing did not do it
+        struct OpenRequest
+        {
+            bool active = false;
+            int  frames = 0;  // map menu frames since the last step
+            int  step = 0;    // 0 waiting for the menu, 1 pressed, 2 released
+        } openRequest;
+
+        void OpenLocalMap()
+        {
+            if (const auto queue = RE::UIMessageQueue::GetSingleton()) {
+                queue->AddMessage(RE::MapMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kShow, nullptr);
+                openRequest = { true, 0, 0 };
+            }
+        }
+
+        void PressLocalMapControl(bool a_down)
+        {
+            const auto events = RE::UserEvents::GetSingleton();
+            const auto controls = RE::MenuControls::GetSingleton();
+            const auto event = events && controls ? RE::ButtonEvent::Create(RE::INPUT_DEVICE::kKeyboard, events->localMap, 38, a_down ? 1.0f : 0.0f, a_down ? 0.0f : 0.1f) : nullptr;
+            if (!event) {
+                return;
+            }
+            RE::InputEvent* list = event;
+            controls->ProcessEvent(&list, nullptr);
+            RE::free(event);
+        }
+
+        void StepOpenRequest(RE::MapMenu* a_menu, bool a_showing)
+        {
+            if (!openRequest.active || !a_menu) {
+                return;
+            }
+            ++openRequest.frames;
+            const auto data2 = a_menu->GetRuntimeData2();
+            const bool ready = data2 && data2->controlsReady;
+            if (a_showing || openRequest.frames > 180) {
+                openRequest.active = false;
+            } else if (openRequest.step == 0 && ready && openRequest.frames > 2) {
+                PressLocalMapControl(true);
+                openRequest.step = 1;
+                openRequest.frames = 0;
+            } else if (openRequest.step == 1 && openRequest.frames > 20) {
+                PressLocalMapControl(false);
+                openRequest.step = 2;
+                openRequest.frames = 0;
+            }
+        }
+
+        // what a reference is called on the map: a door by where it leads, anything else by its name
+        std::string RefName(RE::FormID a_id)
+        {
+            const auto ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(a_id);
+            if (!ref) {
+                return {};
+            }
+            const auto named = [](const char* a_name) { return a_name && *a_name; };
+            if (const auto tele = ref->extraList.GetByType<RE::ExtraTeleport>(); tele && tele->teleportData) {
+                if (const auto linked = tele->teleportData->linkedDoor.get()) {
+                    const auto cell = linked->GetParentCell();
+                    if (cell && cell->IsInteriorCell() && named(cell->GetFullName())) {
+                        return cell->GetFullName();
+                    }
+                    if (const auto location = linked->GetCurrentLocation(); location && named(location->GetFullName())) {
+                        return location->GetFullName();
+                    }
+                    if (const auto world = linked->GetWorldspace(); world && named(world->GetFullName())) {
+                        return world->GetFullName();
+                    }
+                }
+            }
+            const auto name = ref->GetDisplayFullName();
+            return named(name) ? name : "";
+        }
+
+        // the icon under the cursor (the nearest within its badge) and its name
+        void Hover(Frame& a_f, float a_x, float a_y, float a_k)
+        {
+            const float reach = 11.0f * a_k * Settings::Map().iconSize;
+            float       best = reach * reach;
+            const auto  look = [&](const std::vector<ScreenIcon>& a_list, bool a_quest) {
+                for (std::size_t i = 0; i < a_list.size(); ++i) {
+                    const float dx = a_list[i].x - a_x, dy = a_list[i].y - a_y, d = dx * dx + dy * dy;
+                    if (d < best) {
+                        best = d;
+                        a_f.hover = static_cast<int>(i);
+                        a_f.hoverQuest = a_quest;
+                    }
+                }
+            };
+            look(a_f.icons, false);
+            look(a_f.quests, true);
+            if (a_f.hover < 0) {
+                return;
+            }
+            if (a_f.hoverQuest) {
+                const auto at = a_f.quests[a_f.hover].id;
+                a_f.hoverName = at < quests.size() ? quests[at].name : "";
+            } else {
+                a_f.hoverName = RefName(a_f.icons[a_f.hover].id);
+            }
+        }
+
         void CloseLocal()
         {
             local.open = false;
@@ -869,6 +987,7 @@ namespace MiniMap
             const auto  player = RE::PlayerCharacter::GetSingleton();
             const auto  data = a_menu ? a_menu->GetRuntimeData() : nullptr;
             const bool  ours = s.enabled && s.localMap;
+            StepOpenRequest(a_menu, data && data->localMapMenu.GetRuntimeData().showingMap);
             const bool  showing = ours && data && data->localMapMenu.GetRuntimeData().showingMap;
             const float w = screenW, h = screenH;
             // the game's own local map not shown at all while ours replaces it (back when ours is switched off)
@@ -963,6 +1082,9 @@ namespace MiniMap
             local.lastY = cy;
             const auto world = TakeWorld(player, true);
             auto       next = BuildLocal(player, world, w, h);
+            if (cx >= next.mx0 && cx <= next.mx1 && cy >= next.my0 && cy <= next.my1 && !mouseHeld) {
+                Hover(next, cx, cy, h / 1080.0f);
+            }
             std::scoped_lock lock(frameLock);
             localFrame = std::move(next);
         }
@@ -1129,12 +1251,18 @@ namespace MiniMap
             }
             const float size = 16.0f * a_k * s.iconSize;
             for (const auto& i : a_f.icons) {
-                Icons::Draw(a_c, i.kind, i.x, i.y, size, i.alpha * a);
+                Icons::Draw(a_c, i.kind, i.x, i.y, size, i.alpha * a, i.shade);
             }
             for (const auto& q : a_f.quests) {
-                Icons::Draw(a_c, q.kind, q.x, q.y, size * 1.15f, q.alpha * a);
+                Icons::Draw(a_c, q.kind, q.x, q.y, size * 1.15f, q.alpha * a, q.shade);
             }
             Icons::DrawPlayer(a_c, a_f.px, a_f.py, 18.0f * a_k * s.iconSize, a_f.arrowAngle, a);
+            // the one under the cursor: larger, on top, at full light
+            const auto& list = a_f.hoverQuest ? a_f.quests : a_f.icons;
+            if (a_f.hover >= 0 && static_cast<std::size_t>(a_f.hover) < list.size()) {
+                const auto& i = list[a_f.hover];
+                Icons::Draw(a_c, i.kind, i.x, i.y, size * 1.45f, a);
+            }
         }
 
         void DrawMinimap(ImGui::ImDrawList* a_dl, const Frame& a_f, float a_k)
@@ -1217,6 +1345,26 @@ namespace MiniMap
             D::AddText(a_dl, font, size, at, vanilla ? Rgb(236, 232, 220) : Rgb(225, 230, 240), a_f.title.c_str());
         }
 
+        // the name of the icon under the cursor, to its right, as the game's map has it
+        void DrawHoverName(ImGui::ImDrawList* a_dl, const Frame& a_f, float a_k)
+        {
+            using V2 = ImGui::ImVec2;
+            namespace D = ImGui::ImDrawListManager;
+            const auto  font = ImGui::GetFont();
+            const auto& list = a_f.hoverQuest ? a_f.quests : a_f.icons;
+            if (a_f.hoverName.empty() || !font || a_f.hover < 0 || static_cast<std::size_t>(a_f.hover) >= list.size()) {
+                return;
+            }
+            const auto& i = list[a_f.hover];
+            const float base = ImGui::GetFontSize();
+            const float size = 28.0f * a_k;
+            const auto  ts = ImGui::CalcTextSize(a_f.hoverName.c_str());
+            const float kk = base > 0.0f ? size / base : 1.0f;
+            const V2    at{ i.x + 17.0f * a_k * Settings::Map().iconSize, i.y - ts.y * kk * 0.5f };
+            D::AddText(a_dl, font, size, V2{ at.x + 2.0f * a_k, at.y + 2.0f * a_k }, Rgb(0, 0, 0, 220), a_f.hoverName.c_str());
+            D::AddText(a_dl, font, size, at, Rgb(245, 243, 236), a_f.hoverName.c_str());
+        }
+
         // the local map drawn inside the map menu's own drawing (main thread), before the cursor menu: the game's
         // cursor over it. When that cannot draw, the HUD element draws it with ImGui instead
         std::atomic<std::int64_t> localDrawnAt = 0;  // steady clock ticks of the last time it was drawn there
@@ -1285,6 +1433,7 @@ namespace MiniMap
                     }
                 }
                 DrawTitle(dl, f, k);
+                DrawHoverName(dl, f, k);
                 return;
             }
             if (ui->GameIsPaused() || !ui->IsShowingMenus()) {
@@ -1376,6 +1525,9 @@ namespace MiniMap
                     if ((id == s.toggleKey || id == s.beamKey) && id != 0 && InGameplay()) {
                         (id == s.toggleKey ? s.visible : s.questBeam) ^= true;
                         Settings::Save();
+                    }
+                    if (id == s.localMapKey && id != 0 && s.localMap && InGameplay()) {
+                        OpenLocalMap();
                     }
                 }
                 return RE::BSEventNotifyControl::kContinue;

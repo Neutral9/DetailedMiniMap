@@ -84,3 +84,4 @@ BeamKey = Pokaż / ukryj promień:
 LocalMap = Ta mapa zamiast mapy lokalnej
 SecDebug = Diagnostyka
 DebugLog = Szczegółowy log (DetailedMiniMap.log)
+LocalMapKey = Otwórz mapę lokalną:

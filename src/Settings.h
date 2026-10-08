@@ -31,6 +31,7 @@ namespace Settings
         std::uint32_t beamKey = 48;          // its key (48 = B; 0 = none): the beam shown / hidden
         // the game's local map (in the map menu) replaced by this one: dragged with the mouse, zoomed with the wheel
         bool          localMap = true;
+        std::uint32_t localMapKey = 38;      // the key that opens the local map straight from the game (38 = L; 0 = none)
         bool          debugLog = false;      // a detailed log (timings, rebuilds, the reasons) in DetailedMiniMap.log
         // the look (the menu's second page; {} = the defaults)
         struct Look

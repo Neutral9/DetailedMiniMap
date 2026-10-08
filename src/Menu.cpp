@@ -84,6 +84,9 @@ namespace Menu
             Check(Lang::L(S::Enabled).c_str(), m.enabled);
             KeyButton(Lang::T(S::ToggleKey), m.toggleKey, "toggle");
             Check(Lang::L(S::LocalMap).c_str(), m.localMap);
+            if (m.localMap) {
+                KeyButton(Lang::T(S::LocalMapKey), m.localMapKey, "localmap");
+            }
 
             ImGui::SeparatorText(Lang::T(S::SecMinimap));
             {

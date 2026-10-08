@@ -84,3 +84,4 @@ BeamKey = Показать / скрыть луч:
 LocalMap = Наша карта вместо локальной карты
 SecDebug = Диагностика
 DebugLog = Подробный лог (DetailedMiniMap.log)
+LocalMapKey = Открыть локальную карту:

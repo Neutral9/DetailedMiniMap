@@ -32,7 +32,7 @@ namespace Icons
     const char* File(Kind a_kind);  // the texture's file name without .dds; also the ini key suffix
 
     // a_size: the badge's diameter in px
-    void Draw(Canvas& a_canvas, Kind a_kind, float a_x, float a_y, float a_size, float a_alpha = 1.0f);
+    void Draw(Canvas& a_canvas, Kind a_kind, float a_x, float a_y, float a_size, float a_alpha = 1.0f, float a_shade = 1.0f);  // a_shade: 1 as it is, less darker
 
     // the character: its badge (icons/player.dds) upright, a pointer on the rim turned to a_angle (radians, 0 = up,
     // clockwise on the screen)

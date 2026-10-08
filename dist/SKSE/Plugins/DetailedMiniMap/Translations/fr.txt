@@ -84,3 +84,4 @@ BeamKey = Afficher / masquer le rayon :
 LocalMap = Utiliser cette carte à la place de la carte locale
 SecDebug = Diagnostic
 DebugLog = Journal détaillé (DetailedMiniMap.log)
+LocalMapKey = Ouvrir la carte locale :

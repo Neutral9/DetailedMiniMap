@@ -119,6 +119,7 @@ namespace Settings
             a_f("Map", "QuestBeam", m.questBeam);
             a_f("Map", "BeamKey", m.beamKey);
             a_f("Map", "LocalMap", m.localMap);
+            a_f("Map", "LocalMapKey", m.localMapKey);
             a_f("Map", "DebugLog", m.debugLog);
 
             auto& l = m.look;

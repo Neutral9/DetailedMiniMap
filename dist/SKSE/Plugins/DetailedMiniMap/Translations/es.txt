@@ -84,3 +84,4 @@ BeamKey = Mostrar / ocultar rayo:
 LocalMap = Usar este mapa en lugar del mapa local
 SecDebug = Diagnóstico
 DebugLog = Registro detallado (DetailedMiniMap.log)
+LocalMapKey = Abrir el mapa local:

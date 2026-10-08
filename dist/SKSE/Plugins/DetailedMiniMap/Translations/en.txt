@@ -84,3 +84,4 @@ BeamKey = Show / hide beam:
 LocalMap = Use this map instead of the local map
 SecDebug = Diagnostics
 DebugLog = Detailed log (DetailedMiniMap.log)
+LocalMapKey = Open the local map:
