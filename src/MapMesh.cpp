@@ -12,9 +12,10 @@ namespace MapMesh
     {
         constexpr float       kHarvestEvery = 1.0f / 3.0f;   // seconds: the loaded cells' meshes are looked at this often
         constexpr std::size_t kUploadPerFrame = 1'500'000;   // triangles sent to the GPU in one frame
-        constexpr std::size_t kKeptTriangles = 4'000'000;    // in memory at most: the cells around and a few left behind
-        constexpr std::size_t kBuildPerHarvest = 30'000;      // triangles copied in one harvest at most (a few ms): a cell arriving with many is spread over frames
+        constexpr std::size_t kKeptTriangles = 6'000'000;    // in memory at most: the loaded cells (always kept) and a few left behind
+        constexpr std::size_t kBuildPerFrame = 40'000;       // triangles copied in one frame at most (about 2 ms): a cell arriving with many is spread over frames
         constexpr float       kCellSize = 4096.0f;           // an exterior cell
+        constexpr float       kTinyRadius = 20.0f;           // meshes smaller than this (bound radius) are left off the map
 
         // what a mesh is drawn as (the shader's b1)
         enum Kind : int
@@ -91,7 +92,6 @@ namespace MapMesh
         std::vector<IUnknown*>                             releaseQueue;
         std::uint64_t                                      tick = 0;
         float                                              sinceHarvest = kHarvestEvery;
-        bool                                               harvestAgain = false;  // cells left over (the copy budget ran out): harvest again next frame
         // the detailed log's numbers (main thread; the render thread's are atomics)
         struct Perf
         {
@@ -190,7 +190,7 @@ namespace MapMesh
         // no foliage (alpha-tested planks, thatch, fences stay)
         struct CollectStats  // what was left out (for the log)
         {
-            int hidden = 0, actors = 0, foliage = 0, shader = 0, other = 0, markers = 0, items = 0;
+            int hidden = 0, actors = 0, foliage = 0, shader = 0, other = 0, markers = 0, items = 0, tiny = 0;
         };
         CollectStats collectStats;  // of the last harvest (main thread)
 
@@ -264,6 +264,11 @@ namespace MapMesh
                 ++collectStats.foliage;
                 return;
             }
+            // small things (a plate, a cup, a coin purse): under a pixel on any map, yet often most of a city cell's triangles
+            if (!water && a_obj->worldBound.radius < kTinyRadius) {
+                ++collectStats.tiny;
+                return;
+            }
             a_out.push_back(tri);
         }
 
@@ -275,10 +280,20 @@ namespace MapMesh
             return a_x ^ (a_x >> 31);
         }
 
+        bool IsLand(RE::BSTriShape* a_shape);  // below
+
         // a shape by its name and counts. Not where it stands: a pushed bucket or an opened door is the same map, and
         // havok settles things a little differently each time
         std::uint64_t ShapeHash(RE::BSTriShape* a_shape)
         {
+            // the landscape: by its block and place only - the game (or a renderer mod) swaps a block for one with other
+            // counts as the character moves, the same ground
+            if (IsLand(a_shape)) {
+                const auto& c = a_shape->worldBound.center;
+                std::uint64_t h = std::hash<std::string_view>{}(a_shape->name.c_str());
+                h = Mix(h ^ static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(c.x / 256.0f))));
+                return Mix(h ^ static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(c.y / 256.0f))));
+            }
             const auto&   c = a_shape->GetTrishapeRuntimeData();
             std::uint64_t h = std::hash<std::string_view>{}(a_shape->name.c_str());
             h = Mix(h ^ c.triangleCount);
@@ -458,61 +473,88 @@ namespace MapMesh
             return IsLand(a_shape) ? kLand : kObjects;
         }
 
-        // the meshes with a usable CPU copy into one cell mesh; the others become GPU jobs
-        std::unique_ptr<CellMesh> Build(RE::FormID a_id, RE::FormID a_space, const std::vector<RE::BSTriShape*>& a_shapes, std::vector<std::uint64_t> a_hashes,
-            std::vector<GpuJob>& a_jobs, BuildStats& a_stats)
+        // a cell being built: its shapes copied a few at a time, a frame's budget of triangles each frame (a city cell of
+        // a couple of million triangles at once was a tenth of a second's freeze); the shapes are held meanwhile
+        struct Pending
         {
-            auto m = std::make_unique<CellMesh>();
-            m->cell = a_id;
-            m->space = a_space;
-            m->signature = Signature(a_hashes);
-            m->shapes = std::move(a_hashes);
+            RE::FormID                                 id = 0;
+            std::string                                what;  // for the log
+            std::uint64_t                              sig = 0;
+            std::vector<RE::NiPointer<RE::BSTriShape>> shapes;
+            std::size_t                                next = 0;  // the next shape to copy
+            std::uint32_t                              part = 1;  // the next GPU read's part number
+            std::unique_ptr<CellMesh>                  mesh;
+            std::vector<GpuJob>                        jobs;
+            BuildStats                                 stats;
+        };
+        std::deque<Pending> pending;  // main thread
+
+        // a build begun: the cell's mesh (part 0) with its set, the shapes held
+        Pending BeginBuild(RE::FormID a_id, RE::FormID a_space, std::string a_what, const std::vector<RE::BSTriShape*>& a_shapes, std::vector<std::uint64_t> a_hashes)
+        {
+            Pending p;
+            p.id = a_id;
+            p.what = std::move(a_what);
+            p.mesh = std::make_unique<CellMesh>();
+            auto& m = *p.mesh;
+            m.cell = a_id;
+            m.space = a_space;
+            m.signature = p.sig = Signature(a_hashes);
+            m.shapes = std::move(a_hashes);
             if (Settings::Map().debugLog) {
                 for (const auto shape : a_shapes) {
-                    m->names.emplace_back(ShapeHash(shape), shape->name.c_str());
+                    m.names.emplace_back(ShapeHash(shape), shape->name.c_str());
                 }
             }
-            m->serial = ++buildSerial;
-            std::uint32_t part = 1;
+            m.serial = ++buildSerial;
+            p.shapes.reserve(a_shapes.size());
             for (const auto shape : a_shapes) {
-                const auto& rd = shape->GetGeometryRuntimeData();
-                const auto  data = rd.rendererData;
-                const auto& counts = shape->GetTrishapeRuntimeData();
-                const auto  stride = static_cast<std::uint32_t>(std::bit_cast<std::uint64_t>(rd.vertexDesc) & 0xF) * 4;
-                const bool  noCounts = counts.vertexCount == 0 || counts.triangleCount == 0;  // a multi-part shape: the counts come from its GPU buffers
-                if (stride < 8 || (noCounts && (!data->vertexBuffer || !data->indexBuffer))) {
-                    continue;
-                }
-                const bool full = rd.vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_FULLPREC);
-                const int  kind = KindOf(shape);  // the landscape and water: always meshes of their own (their own look)
-                if (!noCounts && kind == kObjects && data->rawVertexData && data->rawIndexData &&
-                    Decode(shape->name.c_str(), data->rawVertexData, stride, counts.vertexCount, full, data->rawIndexData, counts.triangleCount, shape->world, shape->worldBound, *m, false)) {
-                    ++a_stats.cpu;
-                    continue;
-                }
-                if (!data->vertexBuffer || (!data->indexBuffer && !data->rawIndexData)) {
-                    continue;
-                }
-                GpuJob job;
-                job.key = MeshKey(m->cell, part++);
-                job.cell = m->cell;
-                job.space = a_space;
-                job.keep.reset(shape);
-                job.world = shape->world;
-                job.bound = shape->worldBound;
-                job.stride = stride;
-                job.vertexCount = counts.vertexCount;
-                job.triangleCount = counts.triangleCount;
-                job.full = full;
-                job.vb = reinterpret_cast<ID3D11Buffer*>(data->vertexBuffer);
-                job.ib = reinterpret_cast<ID3D11Buffer*>(data->indexBuffer);
-                job.rawIndices = noCounts ? nullptr : data->rawIndexData;
-                job.kind = kind;
-                job.serial = m->serial;
-                a_jobs.push_back(std::move(job));
-                ++a_stats.gpu;
+                p.shapes.emplace_back(shape);
             }
-            return m;
+            return p;
+        }
+
+        // one shape into the build: from its CPU copy into part 0, else a GPU read of its own
+        void BuildShape(Pending& a_p, RE::BSTriShape* a_shape)
+        {
+            auto&       m = *a_p.mesh;
+            const auto& rd = a_shape->GetGeometryRuntimeData();
+            const auto  data = rd.rendererData;
+            const auto& counts = a_shape->GetTrishapeRuntimeData();
+            const auto  stride = static_cast<std::uint32_t>(std::bit_cast<std::uint64_t>(rd.vertexDesc) & 0xF) * 4;
+            const bool  noCounts = counts.vertexCount == 0 || counts.triangleCount == 0;  // a multi-part shape: the counts come from its GPU buffers
+            if (!data || stride < 8 || (noCounts && (!data->vertexBuffer || !data->indexBuffer))) {
+                return;
+            }
+            const bool full = rd.vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_FULLPREC);
+            const int  kind = KindOf(a_shape);  // the landscape and water: always meshes of their own (their own look)
+            if (!noCounts && kind == kObjects && data->rawVertexData && data->rawIndexData &&
+                Decode(a_shape->name.c_str(), data->rawVertexData, stride, counts.vertexCount, full, data->rawIndexData, counts.triangleCount, a_shape->world, a_shape->worldBound, m,
+                    false)) {
+                ++a_p.stats.cpu;
+                return;
+            }
+            if (!data->vertexBuffer || (!data->indexBuffer && !data->rawIndexData)) {
+                return;
+            }
+            GpuJob job;
+            job.key = MeshKey(m.cell, a_p.part++);
+            job.cell = m.cell;
+            job.space = m.space;
+            job.keep.reset(a_shape);
+            job.world = a_shape->world;
+            job.bound = a_shape->worldBound;
+            job.stride = stride;
+            job.vertexCount = counts.vertexCount;
+            job.triangleCount = counts.triangleCount;
+            job.full = full;
+            job.vb = reinterpret_cast<ID3D11Buffer*>(data->vertexBuffer);
+            job.ib = reinterpret_cast<ID3D11Buffer*>(data->indexBuffer);
+            job.rawIndices = noCounts ? nullptr : data->rawIndexData;
+            job.kind = kind;
+            job.serial = m.serial;
+            a_p.jobs.push_back(std::move(job));
+            ++a_p.stats.gpu;
         }
 
         void Drop(CellMesh& a_mesh)  // under meshLock: GPU buffers go on the render thread
@@ -553,6 +595,7 @@ namespace MapMesh
         {
             DropMeshes(a_cell);
             staging.erase(a_cell);
+            std::erase_if(pending, [&](const Pending& a_p) { return a_p.id == a_cell; });
             DropJobs(a_cell);
             lastSignature.erase(a_cell);
             unsettled.erase(a_cell);
@@ -698,6 +741,7 @@ namespace MapMesh
             }
             meshes.clear();
             staging.clear();
+            pending.clear();
             for (auto& job : jobs) {
                 graveyard.push_back(std::move(job.keep));
             }
@@ -753,6 +797,19 @@ namespace MapMesh
                 }
             }
 
+            // every cell the game has loaded stays in memory (seen now), in the scan or not: only those it let go of may
+            // be dropped for room - a cell out of the scan for a moment is not built all over again when it comes back
+            {
+                std::scoped_lock guard(meshLock);
+                for (const auto cell : attached) {
+                    const auto coords = inside ? nullptr : cell->GetCoordinates();
+                    const auto id = inside ? cell->GetFormID() : coords ? ExteriorId(coords->cellX, coords->cellY) : 0;
+                    for (auto p = meshes.lower_bound(MeshKey(id, 0)); id != 0 && p != meshes.end() && p->second->cell == id; ++p) {
+                        p->second->lastSeen = tick;
+                    }
+                }
+            }
+
             // which cells are looked at this time: new ones, changed ones, and the rest every few harvests
             const auto due = [&](RE::FormID a_id) {
                 std::scoped_lock guard(meshLock);
@@ -766,7 +823,6 @@ namespace MapMesh
                 return false;
             };
 
-            std::size_t built = 0;  // triangles copied this harvest: the copying is spread over harvests
             // one cell's meshes: kept while the same, rebuilt when they changed
             const auto process = [&](RE::FormID a_id, const std::string& a_what, const std::vector<RE::BSTriShape*>& a_shapes) {
                 lastCheck[a_id] = tick;
@@ -806,6 +862,10 @@ namespace MapMesh
                         keep();
                         return;
                     }
+                    if (std::ranges::any_of(pending, [&](const Pending& a_p) { return a_p.id == a_id && a_p.sig == sig; })) {
+                        keep();
+                        return;
+                    }
                     if (onMap && it->second->signature == sig) {
                         shrinking.erase(a_id);
                         keep();
@@ -833,10 +893,6 @@ namespace MapMesh
                         return;
                     }
                 }
-                if (built > kBuildPerHarvest) {
-                    harvestAgain = true;  // enough for this frame: the rest on the next one
-                    return;
-                }
                 if (rebuild && Settings::Map().debugLog) {
                     // what came and what went, by name
                     std::vector<std::uint64_t> added, gone;
@@ -862,36 +918,9 @@ namespace MapMesh
                 rebuild ? ++perf.rebuilds : ++perf.builds;
                 lastBuilt[a_id] = tick;
                 shrinking.erase(a_id);
-                std::vector<GpuJob> newJobs;
-                BuildStats          stats;
-                formatSwapped = 0;
-                strayTriangles = 0;
-                auto m = Build(a_id, a_space, a_shapes, std::move(hashes), newJobs, stats);
-                built += m->triangles + 1000;
-                m->lastSeen = tick;
-                logger::info("map 3d: {}: {} meshes - {} from the CPU copy ({} triangles), {} to read from the GPU, {} read in the other format than flagged; "
-                             "left out: {} hidden nodes, {} actors, {} foliage, {} other shaders, {} other geometry, {} markers / triggers / occlusion planes, {} loose items, {} stray triangles",
-                    a_what, a_shapes.size(), stats.cpu, m->triangles, stats.gpu, formatSwapped, collectStats.hidden, collectStats.actors, collectStats.foliage,
-                    collectStats.shader, collectStats.other, collectStats.markers, collectStats.items, strayTriangles);
-                std::scoped_lock guard(meshLock);
-                // a cell already on the map is rebuilt aside: the old one stays until the new one is complete
-                const bool replace = meshes.contains(MeshKey(a_id, 0));
-                staging.erase(a_id);
-                DropJobs(a_id);
-                if (replace) {
-                    auto& st = staging[a_id];
-                    st.sig = sig;
-                    st.serial = m->serial;
-                    st.parts[MeshKey(a_id, 0)] = std::move(m);
-                } else {
-                    meshes[MeshKey(a_id, 0)] = std::move(m);
-                }
-                for (auto& job : newJobs) {
-                    job.lastSeen = tick;
-                    job.staged = replace;
-                    jobs.push_back(std::move(job));
-                }
-                EvictOver();
+                // copied over the next frames (StepBuilds); a build of this cell still under way is replaced
+                std::erase_if(pending, [&](const Pending& a_p) { return a_p.id == a_id; });
+                pending.push_back(BeginBuild(a_id, a_space, a_what, a_shapes, std::move(hashes)));
             };
 
             // the cells due now: their trees, plus the references hanging outside every tree
@@ -976,6 +1005,54 @@ namespace MapMesh
             }
             for (const auto id : gone) {
                 DropCell(id);
+            }
+        }
+
+        // a build done: onto the map, or (a cell already on it) aside until its GPU reads are in
+        void Commit(Pending& a_p)
+        {
+            auto& m = a_p.mesh;
+            m->lastSeen = tick;
+            logger::info("map 3d: {}: {} meshes - {} from the CPU copy ({} triangles), {} to read from the GPU", a_p.what, a_p.shapes.size(), a_p.stats.cpu, m->triangles,
+                a_p.stats.gpu);
+            std::scoped_lock guard(meshLock);
+            const auto       id = a_p.id;
+            const bool       replace = meshes.contains(MeshKey(id, 0));
+            staging.erase(id);
+            DropJobs(id);
+            const auto serial = m->serial;
+            if (replace) {
+                auto& st = staging[id];
+                st.sig = a_p.sig;
+                st.serial = serial;
+                st.parts[MeshKey(id, 0)] = std::move(m);
+            } else {
+                meshes[MeshKey(id, 0)] = std::move(m);
+            }
+            for (auto& job : a_p.jobs) {
+                job.lastSeen = tick;
+                job.staged = replace;
+                jobs.push_back(std::move(job));
+            }
+            EvictOver();
+        }
+
+        // main thread, every frame: the builds under way go on, a frame's budget of triangles at a time
+        void StepBuilds()
+        {
+            std::size_t done = 0;
+            while (!pending.empty() && done < kBuildPerFrame) {
+                auto& p = pending.front();
+                while (p.next < p.shapes.size() && done < kBuildPerFrame) {
+                    const auto shape = p.shapes[p.next++].get();
+                    done += shape->GetTrishapeRuntimeData().triangleCount + 64;
+                    BuildShape(p, shape);
+                }
+                if (p.next < p.shapes.size()) {
+                    break;
+                }
+                Commit(p);
+                pending.pop_front();
             }
         }
 
@@ -1835,25 +1912,28 @@ float4 PS(VSOut i) : SV_Target
         const bool outdoors = cell && !cell->IsInteriorCell();
         // the meshes are picked up 3 times a second, so what loads in while running shows at once; scanned a bit
         // farther than the map shows, so a cell is in (and faded in) before it comes into view
-        const bool  regular = (sinceHarvest += a_delta) >= kHarvestEvery;
-        const bool  extra = std::exchange(harvestAgain, false);
         const float scan = a_radius * 1.25f + kCellSize * 0.5f;
-        if (regular || extra) {
+        if ((sinceHarvest += a_delta) >= kHarvestEvery) {
             const auto start = std::chrono::steady_clock::now();
-            const auto before = perf.builds + perf.rebuilds;
-            Harvest(a_player, space, scan, !regular);
-            if (regular) {
-                sinceHarvest = 0.0f;
-                if (s.look.roads) {
-                    HarvestRoads(a_player, space, scan);
-                }
+            sinceHarvest = 0.0f;
+            Harvest(a_player, space, scan, false);
+            if (s.look.roads) {
+                HarvestRoads(a_player, space, scan);
             }
             const double ms = MsSince(start);
             ++perf.harvests;
             perf.harvestMs += ms;
             perf.harvestMax = std::max(perf.harvestMax, ms);
             if (ms > 6.0) {
-                logger::info("perf: a slow harvest, {:.1f} ms ({} cells built in it{})", ms, perf.builds + perf.rebuilds - before, extra ? ", a continued one" : "");
+                logger::info("perf: a slow harvest, {:.1f} ms", ms);
+            }
+        }
+        // the cells being built: a frame's share
+        if (!pending.empty()) {
+            const auto start = std::chrono::steady_clock::now();
+            StepBuilds();
+            if (const double ms = MsSince(start); ms > 6.0) {
+                logger::info("perf: a slow build step, {:.1f} ms", ms);
             }
         }
         PublishRoadMesh(space, s.look.roads && outdoors);
