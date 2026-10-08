@@ -463,7 +463,7 @@ namespace MiniMap
             v.width = static_cast<int>(a_w);
             v.height = static_cast<int>(a_h);
             v.player = a_world.player;
-            // inside the ceiling goes; outside nothing by height, only what covers the character (the occlusion cut)
+            // inside the ceiling goes (everything this far over the feet); outside nothing is cut
             v.cut = s.cut && a_world.inside ? s.cutHeight : 1.0e7f;
             v.space = a_world.space;
             const auto& l = s.look;
@@ -486,38 +486,6 @@ namespace MiniMap
             v.roads[3] = l.roads ? 1.0f + (l.roadWidth - 1.0f) * 150.0f : 0.0f;  // on; past 1: widened by that many world units
             v.water[3] = l.water ? 1.0f : 0.0f;
             return v;
-        }
-
-        // the occlusion cut: where the character stands on this picture and how far along the view; whatever lies
-        // inside that outline and nearer is cut away
-        void SetOccluder(MapMesh::View& a_view, const World& a_world)
-        {
-            if (!Settings::Map().cut) {
-                return;
-            }
-            const auto& pos = a_world.player;
-            struct Screen
-            {
-                float x, y, depth;
-            };
-            const auto project = [&](const RE::NiPoint3& a_p) -> Screen {
-                float c[3];
-                for (int r = 0; r < 3; ++r) {
-                    c[r] = a_view.rows[r][0] * a_p.x + a_view.rows[r][1] * a_p.y + a_view.rows[r][2] * a_p.z + a_view.rows[r][3];
-                }
-                return { (c[0] * 0.5f + 0.5f) * a_view.width, (0.5f - c[1] * 0.5f) * a_view.height, c[2] };
-            };
-            const auto feet = project(pos);
-            const auto head = project(pos + RE::NiPoint3{ 0.0f, 0.0f, a_world.tall });
-            const auto middle = project(pos + RE::NiPoint3{ 0.0f, 0.0f, a_world.tall * 0.5f });
-            // the outline: the character's height on this picture, a bit wider than they are, never smaller than a few px
-            const float ry = std::max(std::abs(feet.y - head.y) * 0.65f, 6.0f) + 4.0f;
-            a_view.occluder[0] = middle.x;
-            a_view.occluder[1] = middle.y;
-            a_view.occluder[2] = std::max(ry * 0.7f, 8.0f);
-            a_view.occluder[3] = ry;
-            a_view.occluder2[0] = middle.depth;
-            a_view.occluder2[1] = pos.z + 40.0f;  // the ground at their feet stays
         }
 
         // ---- a map picture with its markers, built on the main thread, drawn by the HUD element
@@ -746,7 +714,6 @@ namespace MiniMap
             auto view = MeshView(a_world, size, size);
             o.Fill(view);
             view.range = MinimapReach(a_world.inside);
-            SetOccluder(view, a_world);
             f.view = view;
             return f;
         }
@@ -861,7 +828,7 @@ namespace MiniMap
                 });
             auto view = MeshView(a_world, W, H);
             o.Fill(view);
-            view.range = 1.0e9f;  // everything loaded that falls on the picture (no occlusion cut round the character)
+            view.range = 1.0e9f;  // everything loaded that falls on the picture
             view.slot = 1;
             f.view = view;
             std::tie(f.cursorX, f.cursorY) = Cursor(a_w, a_h);
