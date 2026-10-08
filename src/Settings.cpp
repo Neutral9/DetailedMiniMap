@@ -95,6 +95,7 @@ namespace Settings
             auto& m = map;
             a_f("Map", "Enabled", m.enabled);
             a_f("Map", "ToggleKey", m.toggleKey);
+            a_f("Map", "ToggleMod", m.toggleMod);
             a_f("Map", "Visible", m.visible);
             a_f("Map", "Language", m.language, -1, Lang::kLanguages - 1);
             a_f("Map", "MinimapSize", m.minimapSize, 100.0f, 600.0f);
@@ -118,8 +119,14 @@ namespace Settings
             a_f("Map", "CutHeight", m.cutHeight, 80.0f, 2000.0f);
             a_f("Map", "QuestBeam", m.questBeam);
             a_f("Map", "BeamKey", m.beamKey);
+            a_f("Map", "BeamMod", m.beamMod);
             a_f("Map", "LocalMap", m.localMap);
             a_f("Map", "LocalMapKey", m.localMapKey);
+            a_f("Map", "LocalMapMod", m.localMapMod);
+            a_f("Map", "ZoomInKey", m.zoomInKey);
+            a_f("Map", "ZoomInMod", m.zoomInMod);
+            a_f("Map", "ZoomOutKey", m.zoomOutKey);
+            a_f("Map", "ZoomOutMod", m.zoomOutMod);
             a_f("Map", "DebugLog", m.debugLog);
 
             auto& l = m.look;
@@ -186,10 +193,24 @@ namespace Settings
             { 205, "Right" }, { 207, "End" }, { 208, "Down" }, { 209, "Page Down" }, { 210, "Insert" },
             { 211, "Delete" }
         };
+        // the mouse from 256, the gamepad from 266 (as SKSE counts them)
+        static constexpr const char* kMouse[] = { "Mouse Left", "Mouse Right", "Mouse Middle", "Mouse 4", "Mouse 5", "Mouse 6", "Mouse 7", "Mouse 8", "Wheel Up", "Wheel Down" };
+        static constexpr const char* kPad[] = { "Dpad Up", "Dpad Down", "Dpad Left", "Dpad Right", "Start", "Back", "LS", "RS", "LB", "RB", "A", "B", "X", "Y", "LT", "RT" };
         if (a_key == 0) {
             return Lang::T(Lang::S::KeyNone);
         }
+        if (a_key >= 256 && a_key < 256 + std::size(kMouse)) {
+            return kMouse[a_key - 256];
+        }
+        if (a_key >= 266 && a_key < 266 + std::size(kPad)) {
+            return std::format("Gamepad {}", kPad[a_key - 266]);
+        }
         const auto it = names.find(a_key);
         return it != names.end() ? it->second : std::format("#{}", a_key);
+    }
+
+    std::string BindName(std::uint32_t a_key, std::uint32_t a_mod)
+    {
+        return a_key != 0 && a_mod != 0 ? std::format("{} + {}", KeyName(a_mod), KeyName(a_key)) : KeyName(a_key);
     }
 }

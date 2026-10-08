@@ -40,6 +40,9 @@ namespace MiniMap
         // the mouse, for the local map (main thread: input events and the map menu's update)
         bool mouseHeld = false;  // the left button down
         int  wheel = 0;          // wheel steps since the last map update (up: +)
+        std::pair<float, float> leftStick{}, rightStick{};  // the gamepad's sticks (the local map: moved, zoomed)
+        float saveIn = -1.0f;    // seconds until a zoomed minimap range is written to the ini
+        std::atomic<std::uint32_t*> captureMod = nullptr;  // the bind being set: where the key held with it goes
 
         // free gameplay: no menu takes the input, nothing paused
         bool InGameplay()
@@ -1023,6 +1026,7 @@ namespace MiniMap
                 wheel = 0;
                 rawX = rawY = 0.0f;
                 panKeys = {};
+                leftStick = rightStick = {};
                 markerRange = inside ? std::max(MinimapReach(true) * 4.0f, 6000.0f) : kLocalReach;
                 GatherStatics(player);
                 GatherQuests(player);
@@ -1068,6 +1072,13 @@ namespace MiniMap
             const float keyStep = (y1 - y0) * 0.9f * dt;
             dx += (panKeys[1] ? keyStep : 0.0f) - (panKeys[3] ? keyStep : 0.0f);
             dy += (panKeys[0] ? keyStep : 0.0f) - (panKeys[2] ? keyStep : 0.0f);
+            // the gamepad: the left stick moves it, the right one zooms (up: in)
+            const auto stick = [](float a_v) { return std::abs(a_v) > 0.15f ? a_v : 0.0f; };
+            dx -= stick(leftStick.first) * keyStep * 1.2f;
+            dy += stick(leftStick.second) * keyStep * 1.2f;
+            if (const float zoom = stick(rightStick.second); zoom != 0.0f) {
+                local.range = std::clamp(local.range * std::pow(0.85f, zoom * 8.0f * dt), 300.0f, 20000.0f);
+            }
             if (dx != 0.0f || dy != 0.0f) {
                 local.centre.x -= dx / scale;
                 local.centre.y += dy / (scale * st);
@@ -1093,6 +1104,10 @@ namespace MiniMap
         void Update()
         {
             const auto  start = std::chrono::steady_clock::now();
+            // a zoomed range written once the zooming stopped
+            if (saveIn > 0.0f && (saveIn -= std::clamp(RE::GetSecondsSinceLastFrame(), 0.0f, 0.1f)) <= 0.0f) {
+                Settings::Save();
+            }
             const auto  player = RE::PlayerCharacter::GetSingleton();
             const auto& s = Settings::Map();
             const float w = screenW, h = screenH;
@@ -1479,8 +1494,102 @@ namespace MiniMap
             static inline REL::Relocation<decltype(thunk)> func;
         };
 
-        // the keys during gameplay (the minimap's, the beam's: shown / hidden, remembered in the ini) and the mouse for
-        // the local map
+        // ---- the keys: one code for every device, as SKSE counts them (the keyboard's scan codes, 256 + a mouse button,
+        // 264 / 265 the wheel, 266 + a gamepad button); a bind is a key and, optionally, another held with it
+        constexpr std::uint32_t kMouseBase = 256, kPadBase = 266;
+        constexpr std::uint32_t kWheelUp = kMouseBase + 8, kWheelDown = kMouseBase + 9;
+
+        std::uint32_t Code(const RE::ButtonEvent* a_button)
+        {
+            const auto id = a_button->GetIDCode();
+            switch (a_button->GetDevice()) {
+            case RE::INPUT_DEVICE::kKeyboard:
+                return id;
+            case RE::INPUT_DEVICE::kMouse:
+                return kMouseBase + id;
+            case RE::INPUT_DEVICE::kGamepad:
+                {
+                    // XInput's button bits, the triggers as 9 and 10
+                    constexpr std::uint32_t kButtons[] = { 0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0020, 0x0040, 0x0080, 0x0100, 0x0200, 0x1000, 0x2000, 0x4000, 0x8000, 0x0009, 0x000A };
+                    for (std::uint32_t i = 0; i < std::size(kButtons); ++i) {
+                        if (id == kButtons[i]) {
+                            return kPadBase + i;
+                        }
+                    }
+                    return 0;
+                }
+            default:
+                return 0;
+            }
+        }
+
+        // what is held down now (the wheel never is)
+        std::mutex                        heldLock;
+        std::unordered_set<std::uint32_t> held;
+
+        void NoteHeld(const RE::ButtonEvent* a_button)
+        {
+            const auto code = Code(a_button);
+            if (code == 0 || code == kWheelUp || code == kWheelDown) {
+                return;
+            }
+            std::scoped_lock lock(heldLock);
+            if (a_button->IsPressed()) {
+                held.insert(code);
+            } else {
+                held.erase(code);
+            }
+        }
+
+        bool Held(std::uint32_t a_code)
+        {
+            std::scoped_lock lock(heldLock);
+            return held.contains(a_code);
+        }
+
+        enum class Action
+        {
+            kToggle,
+            kBeam,
+            kLocalMap,
+            kZoomIn,
+            kZoomOut
+        };
+
+        // what a key does now: a bind whose other key is held first (Shift + N over N alone)
+        std::optional<Action> ActionOf(std::uint32_t a_code)
+        {
+            const auto& s = Settings::Map();
+            const std::tuple<std::uint32_t, std::uint32_t, Action> binds[] = { { s.toggleKey, s.toggleMod, Action::kToggle }, { s.beamKey, s.beamMod, Action::kBeam },
+                { s.localMapKey, s.localMapMod, Action::kLocalMap }, { s.zoomInKey, s.zoomInMod, Action::kZoomIn }, { s.zoomOutKey, s.zoomOutMod, Action::kZoomOut } };
+            std::optional<Action> alone;
+            for (const auto& [key, mod, action] : binds) {
+                if (key == 0 || key != a_code) {
+                    continue;
+                }
+                if (mod != 0 && Held(mod)) {
+                    return action;
+                }
+                if (mod == 0 && !alone) {
+                    alone = action;
+                }
+            }
+            return alone;
+        }
+
+        // the minimap's range where the character is (outside or inside), a_steps notches in (out: < 0)
+        void Zoom(float a_steps)
+        {
+            const auto player = RE::PlayerCharacter::GetSingleton();
+            const auto cell = player ? player->GetParentCell() : nullptr;
+            auto&      s = Settings::Map();
+            float&     range = cell && cell->IsInteriorCell() ? s.minimapRangeInside : s.minimapRange;
+            range = std::clamp(range * std::pow(0.85f, a_steps), 300.0f, 12000.0f);
+            saveIn = 1.0f;  // written once the zooming stops
+        }
+
+        // the keys during gameplay (the minimap's, the beam's: shown / hidden, remembered in the ini; the local map's;
+        // the zoom) and the mouse and the sticks for the local map
         class InputSink final : public RE::BSTEventSink<RE::InputEvent*>
         {
         public:
@@ -1499,39 +1608,94 @@ namespace MiniMap
                         rawY += static_cast<float>(move->mouseInputY);
                         continue;
                     }
+                    if (const auto stick = event->AsThumbstickEvent()) {
+                        (stick->IsLeft() ? leftStick : rightStick) = { stick->xValue, stick->yValue };
+                        continue;
+                    }
                     const auto button = event->AsButtonEvent();
                     if (!button) {
                         continue;
                     }
+                    NoteHeld(button);
+                    const auto code = Code(button);
                     if (button->GetDevice() == RE::INPUT_DEVICE::kKeyboard) {
                         if (const int pan = PanKey(button->GetIDCode()); pan >= 0) {
                             panKeys[pan] = local.open && button->IsPressed();
                         }
                     }
-                    if (button->GetDevice() == RE::INPUT_DEVICE::kMouse) {
-                        using Mouse = RE::BSWin32MouseDevice::Key;
-                        const auto id = button->GetIDCode();
-                        if (id == Mouse::kLeftButton) {
-                            mouseHeld = button->IsPressed();
-                        } else if (button->IsDown() && (id == Mouse::kWheelUp || id == Mouse::kWheelDown) && local.open) {
-                            wheel += id == Mouse::kWheelUp ? 1 : -1;
+                    if (code == kMouseBase) {
+                        mouseHeld = button->IsPressed();
+                    } else if (button->IsDown() && (code == kWheelUp || code == kWheelDown) && local.open) {
+                        wheel += code == kWheelUp ? 1 : -1;
+                    }
+                    if (captureSlot || !s.enabled || code == 0 || !InGameplay()) {
+                        continue;
+                    }
+                    const auto action = ActionOf(code);
+                    if (!action) {
+                        continue;
+                    }
+                    if (button->IsDown()) {
+                        switch (*action) {
+                        case Action::kToggle:
+                            s.visible = !s.visible;
+                            Settings::Save();
+                            break;
+                        case Action::kBeam:
+                            s.questBeam = !s.questBeam;
+                            Settings::Save();
+                            break;
+                        case Action::kLocalMap:
+                            if (s.localMap) {
+                                OpenLocalMap();
+                            }
+                            break;
+                        case Action::kZoomIn:
+                        case Action::kZoomOut:
+                            Zoom(*action == Action::kZoomIn ? 1.0f : -1.0f);
+                            break;
                         }
-                        continue;
-                    }
-                    if (captureSlot || !s.enabled || !button->IsDown() || button->GetDevice() != RE::INPUT_DEVICE::kKeyboard) {
-                        continue;
-                    }
-                    const auto id = button->GetIDCode();
-                    if ((id == s.toggleKey || id == s.beamKey) && id != 0 && InGameplay()) {
-                        (id == s.toggleKey ? s.visible : s.questBeam) ^= true;
-                        Settings::Save();
-                    }
-                    if (id == s.localMapKey && id != 0 && s.localMap && InGameplay()) {
-                        OpenLocalMap();
+                    } else if (button->IsHeld() && button->HeldDuration() > 0.35f && (*action == Action::kZoomIn || *action == Action::kZoomOut)) {
+                        // a key held: on zooming smoothly
+                        Zoom((*action == Action::kZoomIn ? 5.0f : -5.0f) * std::clamp(RE::GetSecondsSinceLastFrame(), 0.0f, 0.1f));
                     }
                 }
                 return RE::BSEventNotifyControl::kContinue;
             }
+        };
+
+        // PlayerControls' input: what our binds take is not passed on to the game (Shift + the wheel does not zoom the
+        // camera too, a gamepad combination does not open favourites); the events are put back in their chain after
+        struct ControlsHook
+        {
+            static RE::BSEventNotifyControl thunk(RE::PlayerControls* a_this, RE::InputEvent* const* a_event, RE::BSTEventSource<RE::InputEvent*>* a_source)
+            {
+                if (!a_event || !*a_event || captureSlot || !Settings::Map().enabled) {
+                    return func(a_this, a_event, a_source);
+                }
+                std::vector<RE::InputEvent*> all, kept;
+                for (auto e = *a_event; e; e = e->next) {
+                    all.push_back(e);
+                    const auto button = e->AsButtonEvent();
+                    const auto code = button ? Code(button) : 0;
+                    if (code == 0 || !ActionOf(code)) {
+                        kept.push_back(e);
+                    }
+                }
+                if (kept.size() == all.size()) {
+                    return func(a_this, a_event, a_source);
+                }
+                for (std::size_t i = 0; i < kept.size(); ++i) {
+                    kept[i]->next = i + 1 < kept.size() ? kept[i + 1] : nullptr;
+                }
+                RE::InputEvent* head = kept.empty() ? nullptr : kept.front();
+                const auto      result = head ? func(a_this, &head, a_source) : RE::BSEventNotifyControl::kContinue;
+                for (std::size_t i = 0; i < all.size(); ++i) {
+                    all[i]->next = i + 1 < all.size() ? all[i + 1] : nullptr;
+                }
+                return result;
+            }
+            static inline REL::Relocation<decltype(thunk)> func;
         };
 
         // a body's inventory opened: its icon goes
@@ -1577,14 +1741,17 @@ namespace MiniMap
     {
         REL::Relocation<std::uintptr_t> hud{ RE::VTABLE_HUDMenu[0] };
         HudAdvanceHook::func = hud.write_vfunc(0x5, HudAdvanceHook::thunk);
+        REL::Relocation<std::uintptr_t> controls{ RE::VTABLE_PlayerControls[0] };
+        ControlsHook::func = controls.write_vfunc(0x1, ControlsHook::thunk);
         REL::Relocation<std::uintptr_t> map{ RE::VTABLE_MapMenu[0] };
         MapAdvanceHook::func = map.write_vfunc(0x5, MapAdvanceHook::thunk);
         MapDisplayHook::func = map.write_vfunc(0x6, MapDisplayHook::thunk);
         logger::info("hooks installed");
     }
 
-    void StartCapture(std::uint32_t* a_slot)
+    void StartCapture(std::uint32_t* a_slot, std::uint32_t* a_modSlot)
     {
+        captureMod = a_modSlot;
         captureSlot = a_slot;
     }
 
@@ -1597,17 +1764,39 @@ namespace MiniMap
     bool OnFrameworkInput(RE::InputEvent* a_event)
     {
         const auto slot = captureSlot.load();
-        if (!slot || !a_event || a_event->eventType != RE::INPUT_EVENT_TYPE::kButton) {
+        const auto button = a_event && a_event->eventType == RE::INPUT_EVENT_TYPE::kButton ? a_event->AsButtonEvent() : nullptr;
+        if (button) {
+            NoteHeld(button);  // the menu may keep the game's input from us meanwhile
+        }
+        if (!slot || !button) {
             return false;
         }
-        const auto button = a_event->AsButtonEvent();
-        if (button && button->IsDown() && button->GetDevice() == RE::INPUT_DEVICE::kKeyboard) {
-            if (button->GetIDCode() != kEscape) {  // Esc cancels
-                *slot = button->GetIDCode();
-                Settings::Save();
-            }
-            captureSlot = nullptr;
+        const auto code = Code(button);
+        if (code == kMouseBase || code == kMouseBase + 1) {
+            return false;  // the clicks run the menu
         }
+        if (!button->IsDown() || code == 0) {
+            return true;
+        }
+        if (code != kEscape) {  // Esc cancels
+            // a combination: whatever else is held now goes with it (not the menu's clicks)
+            std::uint32_t mod = 0;
+            {
+                std::scoped_lock lock(heldLock);
+                for (const auto h : held) {
+                    if (h != code && h != kMouseBase && h != kMouseBase + 1) {
+                        mod = h;
+                        break;
+                    }
+                }
+            }
+            *slot = code;
+            if (const auto modSlot = captureMod.load()) {
+                *modSlot = mod;
+            }
+            Settings::Save();
+        }
+        captureSlot = nullptr;
         return true;
     }
 

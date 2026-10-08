@@ -85,3 +85,5 @@ LocalMap = 以此地圖取代區域地圖
 SecDebug = 診斷
 DebugLog = 詳細記錄（DetailedMiniMap.log）
 LocalMapKey = 開啟區域地圖：
+ZoomInKey = 放大小地圖：
+ZoomOutKey = 縮小小地圖：

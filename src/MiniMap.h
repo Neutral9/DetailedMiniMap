@@ -9,8 +9,8 @@ namespace MiniMap
     void Register();  // HUD element and event sinks, after the Menu Framework is up
     void Install();   // hooks: the per-frame updates (the HUD, the map menu)
 
-    // the menu's "press a key" button: the next keyboard press is written into a_slot (a key setting)
-    void StartCapture(std::uint32_t* a_slot);
+    // the menu's "press a key" button: the next press (keyboard, mouse, gamepad) is written into a_slot, a key held meanwhile into a_modSlot
+    void StartCapture(std::uint32_t* a_slot, std::uint32_t* a_modSlot);
     bool IsCapturing(const std::uint32_t* a_slot = nullptr);
     bool OnFrameworkInput(RE::InputEvent* a_event);  // from SKSE Menu Framework; true = swallow the event
 

@@ -85,3 +85,5 @@ LocalMap = Ta mapa zamiast mapy lokalnej
 SecDebug = Diagnostyka
 DebugLog = Szczegółowy log (DetailedMiniMap.log)
 LocalMapKey = Otwórz mapę lokalną:
+ZoomInKey = Przybliż minimapę:
+ZoomOutKey = Oddal minimapę:

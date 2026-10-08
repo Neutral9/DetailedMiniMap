@@ -6,7 +6,10 @@ namespace Settings
     struct MapSettings
     {
         bool          enabled = true;
+        // the keys: a key code (keyboard scan code; 256 + mouse button, 264 / 265 the wheel up / down; 266 + gamepad button,
+        // as SKSE counts them) and a key that must be held with it (0 = none)
         std::uint32_t toggleKey = 49;        // DirectInput scan code (49 = N): the minimap shown / hidden, fading (0 = none)
+        std::uint32_t toggleMod = 0;
         bool          visible = true;        // shown (the key switches it; remembered)
         int           language = -1;       // the menu's language (Lang order: ru en fr it de es pl zh ja); -1 = the game's
         float         minimapSize = 600.0f;  // pixels at 1080p
@@ -29,9 +32,16 @@ namespace Settings
         // quests
         bool          questBeam = true;      // a beam from the character to the nearest quest target
         std::uint32_t beamKey = 48;          // its key (48 = B; 0 = none): the beam shown / hidden
+        std::uint32_t beamMod = 0;
         // the game's local map (in the map menu) replaced by this one: dragged with the mouse, zoomed with the wheel
         bool          localMap = true;
         std::uint32_t localMapKey = 38;      // the key that opens the local map straight from the game (38 = L; 0 = none)
+        std::uint32_t localMapMod = 0;
+        // the minimap's range (outside or inside, where the character is) zoomed in and out: Shift + the wheel
+        std::uint32_t zoomInKey = 264;
+        std::uint32_t zoomInMod = 42;
+        std::uint32_t zoomOutKey = 265;
+        std::uint32_t zoomOutMod = 42;
         bool          debugLog = false;      // a detailed log (timings, rebuilds, the reasons) in DetailedMiniMap.log
         // the look (the menu's second page; {} = the defaults)
         struct Look
@@ -64,5 +74,6 @@ namespace Settings
     void Load();
     void Save();
 
-    std::string KeyName(std::uint32_t a_key);  // for the menu
+    std::string KeyName(std::uint32_t a_key);                       // for the menu
+    std::string BindName(std::uint32_t a_key, std::uint32_t a_mod);  // "Left Shift + Wheel Up"
 }

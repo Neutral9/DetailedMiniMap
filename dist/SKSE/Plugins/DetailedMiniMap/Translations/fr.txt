@@ -85,3 +85,5 @@ LocalMap = Utiliser cette carte à la place de la carte locale
 SecDebug = Diagnostic
 DebugLog = Journal détaillé (DetailedMiniMap.log)
 LocalMapKey = Ouvrir la carte locale :
+ZoomInKey = Zoom avant de la mini-carte :
+ZoomOutKey = Zoom arrière de la mini-carte :

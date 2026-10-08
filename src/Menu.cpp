@@ -35,14 +35,14 @@ namespace Menu
             }
         }
 
-        // "label: [key]" - a click waits for the next key press (Esc cancels)
-        void KeyButton(const char* a_label, std::uint32_t& a_key, const char* a_id)
+        // "label: [key]" - a click waits for the next key press, a combination if another key is held then (Esc cancels)
+        void KeyButton(const char* a_label, std::uint32_t& a_key, std::uint32_t& a_mod, const char* a_id)
         {
             ImGui::Text("%s", a_label);
             ImGui::SameLine();
-            const auto label = MiniMap::IsCapturing(&a_key) ? std::string(Lang::T(Lang::S::PressKey)) : Settings::KeyName(a_key);
+            const auto label = MiniMap::IsCapturing(&a_key) ? std::string(Lang::T(Lang::S::PressKey)) : Settings::BindName(a_key, a_mod);
             if (ImGui::Button(std::format("{}###{}", label, a_id).c_str(), ImGui::ImVec2{ 240.0f, 0.0f })) {
-                MiniMap::StartCapture(&a_key);
+                MiniMap::StartCapture(&a_key, &a_mod);
             }
         }
 
@@ -82,10 +82,10 @@ namespace Menu
                 }
             }
             Check(Lang::L(S::Enabled).c_str(), m.enabled);
-            KeyButton(Lang::T(S::ToggleKey), m.toggleKey, "toggle");
+            KeyButton(Lang::T(S::ToggleKey), m.toggleKey, m.toggleMod, "toggle");
             Check(Lang::L(S::LocalMap).c_str(), m.localMap);
             if (m.localMap) {
-                KeyButton(Lang::T(S::LocalMapKey), m.localMapKey, "localmap");
+                KeyButton(Lang::T(S::LocalMapKey), m.localMapKey, m.localMapMod, "localmap");
             }
 
             ImGui::SeparatorText(Lang::T(S::SecMinimap));
@@ -104,6 +104,8 @@ namespace Menu
             Slider(S::Size, m.minimapSize, 100.0f, 600.0f, "%.0f");
             Slider(S::RangeOutside, m.minimapRange, 300.0f, 12000.0f, "%.0f", true);
             Slider(S::RangeInside, m.minimapRangeInside, 300.0f, 12000.0f, "%.0f", true);
+            KeyButton(Lang::T(S::ZoomInKey), m.zoomInKey, m.zoomInMod, "zoomin");
+            KeyButton(Lang::T(S::ZoomOutKey), m.zoomOutKey, m.zoomOutMod, "zoomout");
             Slider(S::Tilt, m.minimapTilt, 20.0f, 90.0f, "%.0f");
 
             ImGui::SeparatorText(Lang::T(S::SecPosition));
@@ -137,7 +139,7 @@ namespace Menu
 
             ImGui::SeparatorText(Lang::T(S::SecQuests));
             Check(Lang::L(S::QuestBeam).c_str(), m.questBeam);
-            KeyButton(Lang::T(S::BeamKey), m.beamKey, "beam");
+            KeyButton(Lang::T(S::BeamKey), m.beamKey, m.beamMod, "beam");
 
             ImGui::SeparatorText(Lang::T(S::SecDebug));
             Check(Lang::L(S::DebugLog).c_str(), m.debugLog);

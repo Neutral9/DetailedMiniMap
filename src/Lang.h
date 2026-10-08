@@ -91,6 +91,8 @@ namespace Lang
         SecDebug,
         DebugLog,
         LocalMapKey,
+        ZoomInKey,
+        ZoomOutKey,
         kCount
     };
 
