@@ -103,6 +103,12 @@ namespace Lang
         Legend,
         Unbind,
         IconStyle,
+        ToggleHold,
+        MinimapFrame,
+        BeamNearest,
+        HideEmpty,
+        GroupIcons,
+        LocalMapHold,
         kCount
     };
 

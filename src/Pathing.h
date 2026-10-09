@@ -1,19 +1,25 @@
 #pragma once
 
-// A walking path over the navmeshes of the loaded cells (the ones the game's characters walk by), for the beam to a
-// quest target: the navmeshes are copied when the loaded cells change (main thread), the path is searched on a
-// thread of its own (A* over the triangles, then pulled tight through the edges it crosses). A target outside the
+// Walking paths over the navmeshes of the loaded cells (the ones the game's characters walk by), for the beams to
+// quest targets: the navmeshes are copied when the loaded cells change (main thread), the paths are searched on a
+// thread of their own (A* over the triangles, then pulled tight through the edges they cross). A target outside the
 // loaded navmesh: the path goes as near to it as the loaded part allows.
 namespace Pathing
 {
+    struct Found
+    {
+        RE::NiPoint3              target;
+        std::vector<RE::NiPoint3> path;  // empty: none
+    };
+
     // main thread, a few times a second: the navmeshes taken again when the loaded cells changed
     void Update(RE::PlayerCharacter* a_player);
 
-    // main thread: a path from a_from to a_to wanted (the last one stays until the new one is found)
-    void Request(const RE::NiPoint3& a_from, const RE::NiPoint3& a_to);
+    // main thread: paths from a_from to each of a_to wanted (the last ones stay until the new ones are found)
+    void Request(const RE::NiPoint3& a_from, const std::vector<RE::NiPoint3>& a_to);
 
-    // the last path found and the target it was for; empty: none (yet)
-    std::vector<RE::NiPoint3> Path(RE::NiPoint3& a_target);
+    // the last paths found, with the targets they were for
+    std::vector<Found> Paths();
 
     void Clear();  // another world space, the map off
 }

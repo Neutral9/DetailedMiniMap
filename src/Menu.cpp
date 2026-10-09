@@ -102,9 +102,11 @@ namespace Menu
             }
             Check(Lang::L(S::Enabled).c_str(), m.enabled);
             KeyButton(Lang::T(S::ToggleKey), m.toggleKey, m.toggleMod, m.toggleKeyPad, m.toggleModPad, "toggle");
+            Check(Lang::L(S::ToggleHold).c_str(), m.toggleHold);
             Check(Lang::L(S::LocalMap).c_str(), m.localMap);
             if (m.localMap) {
                 KeyButton(Lang::T(S::LocalMapKey), m.localMapKey, m.localMapMod, m.localMapKeyPad, m.localMapModPad, "localmap");
+                Check(Lang::L(S::LocalMapHold).c_str(), m.localMapHold);
             }
 
             ImGui::SeparatorText(Lang::T(S::SecMinimap));
@@ -120,6 +122,7 @@ namespace Menu
                 }
             }
             Check(Lang::L(S::NorthUp).c_str(), m.northUp);
+            Check(Lang::L(S::MinimapFrame).c_str(), m.minimapFrame);
             Slider(S::Size, m.minimapSize, 100.0f, 600.0f, "%.0f");
             Slider(S::RangeOutside, m.minimapRange, 300.0f, 12000.0f, "%.0f", true);
             Slider(S::RangeInside, m.minimapRangeInside, 300.0f, 12000.0f, "%.0f", true);
@@ -143,6 +146,8 @@ namespace Menu
             Slider(S::IconFadeIn, m.iconFadeIn, 0.0f, 3.0f, m.iconFadeIn > 0.0f ? "%.2f" : Lang::T(S::AtOnce));
             Slider(S::IconFadeOut, m.iconFadeOut, 0.0f, 3.0f, m.iconFadeOut > 0.0f ? "%.2f" : Lang::T(S::AtOnce));
             Slider(S::IconRange, m.iconRange, 0.0f, 20000.0f, m.iconRange > 0.0f ? "%.0f" : Lang::T(S::Everywhere));
+            Check(Lang::L(S::HideEmpty).c_str(), m.hideEmpty);
+            Check(Lang::L(S::GroupIcons).c_str(), m.groupIcons);
             for (std::size_t i = 0; i < m.show.size(); ++i) {
                 bool on = m.show[i];
                 if (ImGui::Checkbox(std::format("{}###show{}", Icons::Name(static_cast<Icons::Kind>(i)), i).c_str(), &on)) {
@@ -160,6 +165,7 @@ namespace Menu
 
             ImGui::SeparatorText(Lang::T(S::SecQuests));
             Check(Lang::L(S::QuestBeam).c_str(), m.questBeam);
+            Check(Lang::L(S::BeamNearest).c_str(), m.beamNearest);
             KeyButton(Lang::T(S::BeamKey), m.beamKey, m.beamMod, m.beamKeyPad, m.beamModPad, "beam");
 
             ImGui::SeparatorText(Lang::T(S::SecDebug));

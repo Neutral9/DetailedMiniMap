@@ -113,6 +113,23 @@ namespace Pathing
         }
 
         // the triangle a point stands on (the nearest in height of those under it), else the nearest by its centre
+        // the triangle nearest a point among every loaded one (far off the navmesh - deep water, a cliff: the way
+        // starts from the nearest ground NPCs walk, however far)
+        std::int32_t Nearest(const Graph& a_g, const RE::NiPoint3& a_p)
+        {
+            std::int32_t best = -1;
+            float        bestD = FLT_MAX;
+            for (std::size_t i = 0; i < a_g.tris.size(); ++i) {
+                const auto& c = a_g.tris[i].c;
+                const float  d = (c.x - a_p.x) * (c.x - a_p.x) + (c.y - a_p.y) * (c.y - a_p.y) + (c.z - a_p.z) * (c.z - a_p.z);
+                if (d < bestD) {
+                    bestD = d;
+                    best = static_cast<std::int32_t>(i);
+                }
+            }
+            return best;
+        }
+
         std::int32_t Find(const Graph& a_g, const RE::NiPoint3& a_p, float a_reach)
         {
             const auto   gx = static_cast<std::int32_t>(std::floor(a_p.x / Graph::kGrid)), gy = static_cast<std::int32_t>(std::floor(a_p.y / Graph::kGrid));
@@ -258,23 +275,24 @@ namespace Pathing
         }
 
         // ---- the worker
-        std::mutex              lock;
-        std::condition_variable wake;
-        std::shared_ptr<Raws>   pendingRaws;                 // new navmeshes to build the graph from
-        bool                    hasJob = false;
-        RE::NiPoint3            jobFrom, jobTo;
-        std::vector<RE::NiPoint3> result;
-        RE::NiPoint3            resultTarget;
-        std::uint64_t           generation = 0;              // Clear() bumps it: a search under way is thrown away
+        std::mutex                lock;
+        std::condition_variable   wake;
+        std::shared_ptr<Raws>     pendingRaws;  // new navmeshes to build the graph from
+        bool                      hasJob = false;
+        RE::NiPoint3              jobFrom;
+        std::vector<RE::NiPoint3> jobTo;
+        std::vector<Found>        result;
+        std::uint64_t             generation = 0;  // Clear() bumps it: a search under way is thrown away
 
         void Work()
         {
             Graph graph;
             for (;;) {
-                std::shared_ptr<Raws> raws;
-                RE::NiPoint3          from, to;
-                bool                  job = false;
-                std::uint64_t         gen;
+                std::shared_ptr<Raws>     raws;
+                RE::NiPoint3              from;
+                std::vector<RE::NiPoint3> to;
+                bool                      job = false;
+                std::uint64_t             gen;
                 {
                     std::unique_lock guard(lock);
                     wake.wait(guard, [] { return hasJob || pendingRaws; });
@@ -293,19 +311,26 @@ namespace Pathing
                 if (!job || graph.tris.empty()) {
                     continue;
                 }
-                std::vector<RE::NiPoint3> path;
-                const auto                start = Find(graph, from, 1024.0f);
-                if (start >= 0) {
-                    const auto goal = Find(graph, to, 512.0f);
-                    const auto corridor = Search(graph, start, goal, to);
-                    // the target reached: to it; else to the nearest the loaded navmesh came
-                    const auto end = !corridor.empty() && corridor.back() == goal ? to : graph.tris[corridor.back()].c;
-                    path = Pull(graph, corridor, from, end);
+                // a path to every target, one after the other
+                std::vector<Found> paths;
+                auto               start = Find(graph, from, 1024.0f);
+                if (start < 0) {
+                    start = Nearest(graph, from);  // off the navmesh: from the nearest loaded ground, however far
+                }
+                for (const auto& target : to) {
+                    Found found{ target, {} };
+                    if (start >= 0) {
+                        const auto goal = Find(graph, target, 512.0f);
+                        const auto corridor = Search(graph, start, goal, target);
+                        // the target reached: to it; else to the nearest the loaded navmesh came
+                        const auto end = !corridor.empty() && corridor.back() == goal ? target : graph.tris[corridor.back()].c;
+                        found.path = Pull(graph, corridor, from, end);
+                    }
+                    paths.push_back(std::move(found));
                 }
                 std::scoped_lock guard(lock);
                 if (gen == generation) {
-                    result = std::move(path);
-                    resultTarget = to;
+                    result = std::move(paths);
                 }
             }
         }
@@ -376,9 +401,9 @@ namespace Pathing
         wake.notify_one();
     }
 
-    void Request(const RE::NiPoint3& a_from, const RE::NiPoint3& a_to)
+    void Request(const RE::NiPoint3& a_from, const std::vector<RE::NiPoint3>& a_to)
     {
-        if (taken.empty()) {
+        if (taken.empty() || a_to.empty()) {
             return;
         }
         {
@@ -390,10 +415,9 @@ namespace Pathing
         wake.notify_one();
     }
 
-    std::vector<RE::NiPoint3> Path(RE::NiPoint3& a_target)
+    std::vector<Found> Paths()
     {
         std::scoped_lock guard(lock);
-        a_target = resultTarget;
         return result;
     }
 

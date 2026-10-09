@@ -12,6 +12,7 @@ namespace Settings
         std::uint32_t toggleMod = 0;
         std::uint32_t toggleKeyPad = 0;     // ...and on the gamepad (both work; 0 = none)
         std::uint32_t toggleModPad = 0;
+        bool          toggleHold = false;    // the minimap shown only while its key is held (else the key switches it)
         bool          visible = true;        // shown (the key switches it; remembered)
         int           language = -1;       // the menu's language (Lang order: ru en fr it de es pl zh ja); -1 = the game's
         float         minimapSize = 600.0f;  // pixels at 1080p
@@ -21,6 +22,7 @@ namespace Settings
         bool          northUp = false;       // the minimap keeps north up instead of turning with the camera
         bool          minimapRound = true;   // a round minimap instead of the square
         float         minimapCorner = 40.0f; // the square minimap: its corners rounded this far (px at 1080p; 0 = sharp)
+        bool          minimapFrame = true;   // its frame (the vanilla style's or the ring) drawn
         int           anchor = 1;            // the screen corner the minimap sits in: 0 top left, 1 top right, 2 bottom left, 3 bottom right
         float         offsetX = 18.0f;       // ...this far from that corner (px at 1080p)
         float         offsetY = 18.0f;
@@ -30,11 +32,14 @@ namespace Settings
         float         iconFadeOut = 0.35f;   // ...and to go once its thing is gone (picked up, dead, out of range)
         float         iconRange = 0.0f;      // icons only for things this close to the character (world units; 0 = as far as the map shows; quests always)
         float         minimapOpacity = 1.0f; // the whole minimap (picture, frame, icons) this opaque
+        bool          hideEmpty = true;      // containers with nothing to take left off
+        bool          groupIcons = true;     // icons of one kind overlapping on the map merged into one
         std::array<bool, 16> show{ true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true };  // per icon kind (Icons::Kind order); the menu toggles them
         bool          cut = true;            // cut away what is over the character (roofs, ceilings)
         float         cutHeight = 80.0f;     // inside: geometry this far over the feet is cut away (roofs, ceilings)
         // quests
-        bool          questBeam = true;      // a beam from the character to the nearest quest target
+        bool          questBeam = true;      // beams from the character to the quest targets
+        bool          beamNearest = true;    // one beam only, to the nearest target of any quest (by the whole way, through doors); else one to each quest set active in the journal
         std::uint32_t beamKey = 48;          // its key (48 = B; 0 = none): the beam shown / hidden
         std::uint32_t beamMod = 0;
         std::uint32_t beamKeyPad = 0;     // ...and on the gamepad (both work; 0 = none)
@@ -45,6 +50,7 @@ namespace Settings
         std::uint32_t localMapMod = 0;
         std::uint32_t localMapKeyPad = 0;     // ...and on the gamepad (both work; 0 = none)
         std::uint32_t localMapModPad = 0;
+        bool          localMapHold = false;  // the local map open only while its key is held (else the key opens and closes it)
         // the minimap's range (outside or inside, where the character is) zoomed in and out: Shift + the wheel
         std::uint32_t zoomInKey = 264;
         std::uint32_t zoomInMod = 42;

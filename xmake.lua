@@ -10,6 +10,9 @@ set_encodings("utf-8")
 
 add_rules("mode.debug", "mode.releasedbg")
 
+-- MeshFilter.json
+add_requires("nlohmann_json")
+
 -- the target is named after the MO2 mod folder: the plugin rule installs into
 -- XSE_TES5_MODS_PATH/<target name>
 target("DetailedMiniMap")
@@ -20,6 +23,7 @@ target("DetailedMiniMap")
     })
 
     add_files("src/**.cpp")
+    add_packages("nlohmann_json")
     add_headerfiles("src/**.h")
     -- extern: SKSEMenuFramework.h
     add_includedirs("src", "extern")

@@ -98,7 +98,7 @@ public class MakeIcons {
     // hint of it), a dark ink outline and a soft shadow under it
     static void vanilla(Graphics2D g, Icon icon, Shape shape) {
         Shape s = place(shape, 92, S / 2.0 - 12);
-        double mix = icon.name.equals("enemy") || icon.name.equals("quest") ? 0.6 : 0.3;  // the ones to find at a glance
+        double mix = icon.name.equals("enemy") || icon.name.equals("quest") ? 0.8 : 0.6;  // the kind's colour, plain to see (the ones to find at a glance the most)
         Color col = new Color((int) Math.round(232 + (icon.r - 232) * mix), (int) Math.round(226 + (icon.g - 226) * mix), (int) Math.round(208 + (icon.b - 208) * mix));
         BasicStroke edge = new BasicStroke(11, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
         Shape shadow = AffineTransform.getTranslateInstance(3, 4).createTransformedShape(s);

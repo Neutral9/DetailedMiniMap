@@ -3,7 +3,7 @@
 #include "Icons.h"
 #include "Lang.h"
 
-#include <Windows.h>
+#include <fstream>
 
 namespace Settings
 {
@@ -22,91 +22,149 @@ namespace Settings
             log->set_level(map.debugLog ? spdlog::level::info : spdlog::level::warn);
         }
 
-        std::string IniPath(const char* a_name)
+        std::filesystem::path IniPath(const char* a_name)
         {
-            return (std::filesystem::current_path() / "Data/SKSE/Plugins" / a_name).string();
+            return std::filesystem::current_path() / "Data/SKSE/Plugins" / a_name;
         }
 
-        // the user ini overrides the default one key by key
-        float ReadFloat(const char* a_section, const char* a_key, float a_default, bool a_user = true)
+        // an ini read whole: "section\nkey" (lower case) -> value. Read and written with plain file I/O, not the
+        // Windows profile API: under Mod Organizer's virtual file system that one did not always write over a file
+        // already there (a setting changed, then lost)
+        using Ini = std::unordered_map<std::string, std::string>;
+
+        std::string Lower(std::string_view a_s)
         {
-            char buf[64];
-            for (const auto file : { "DetailedMiniMap.ini", "DetailedMiniMap_User.ini" }) {
-                if (!a_user && file != std::string_view("DetailedMiniMap.ini")) {
-                    break;
+            std::string out(a_s);
+            std::ranges::transform(out, out.begin(), [](char a_c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(a_c))); });
+            return out;
+        }
+
+        std::string Trim(std::string_view a_s)
+        {
+            const auto first = a_s.find_first_not_of(" \t\r\n\xEF\xBB\xBF");
+            const auto last = a_s.find_last_not_of(" \t\r\n");
+            return first == std::string_view::npos ? std::string() : std::string(a_s.substr(first, last - first + 1));
+        }
+
+        Ini ReadIni(const char* a_name)
+        {
+            Ini           out;
+            std::ifstream file(IniPath(a_name));
+            std::string   line, section;
+            while (std::getline(file, line)) {
+                const auto text = Trim(line);
+                if (text.empty() || text.front() == ';' || text.front() == '#') {
+                    continue;
                 }
-                if (::GetPrivateProfileStringA(a_section, a_key, "", buf, sizeof(buf), IniPath(file).c_str()) > 0) {
-                    try {
-                        a_default = std::stof(buf);
-                    } catch (...) {
-                        logger::warn("{}: [{}] {}={} is not a number", file, a_section, a_key, buf);
-                    }
+                if (text.front() == '[') {
+                    section = Lower(Trim(std::string_view(text).substr(1, text.find(']') - 1)));
+                    continue;
+                }
+                if (const auto eq = text.find('='); eq != std::string::npos) {
+                    out[section + '\n' + Lower(Trim(std::string_view(text).substr(0, eq)))] = Trim(std::string_view(text).substr(eq + 1));
                 }
             }
-            return a_default;
-        }
-
-        void WriteFloat(const char* a_section, const char* a_key, float a_value)
-        {
-            ::WritePrivateProfileStringA(a_section, a_key, std::format("{:g}", a_value).c_str(), IniPath("DetailedMiniMap_User.ini").c_str());
+            return out;
         }
 
         // every setting once: read (with its range) or written
         struct Reader
         {
-            bool user = true;  // false: the shipped defaults only (a reset)
+            std::vector<Ini> files;  // the shipped defaults, then the user's (it overrides them key by key)
+
+            explicit Reader(bool a_user = true)
+            {
+                files.push_back(ReadIni("DetailedMiniMap.ini"));
+                if (a_user) {  // not on a reset: the defaults only
+                    files.push_back(ReadIni("DetailedMiniMap_User.ini"));
+                }
+            }
+
+            const std::string* Find(const char* a_section, const char* a_key) const
+            {
+                const auto         key = Lower(a_section) + '\n' + Lower(a_key);
+                const std::string* found = nullptr;
+                for (const auto& file : files) {
+                    if (const auto it = file.find(key); it != file.end() && !it->second.empty()) {
+                        found = &it->second;
+                    }
+                }
+                return found;
+            }
+
+            float Number(const char* a_section, const char* a_key, float a_default) const
+            {
+                const auto text = Find(a_section, a_key);
+                if (!text) {
+                    return a_default;
+                }
+                try {
+                    return std::stof(*text);
+                } catch (...) {
+                    logger::warn("ini: [{}] {}={} is not a number", a_section, a_key, *text);
+                    return a_default;
+                }
+            }
 
             void operator()(const char* a_section, const char* a_key, bool& a_value) const
             {
-                a_value = ReadFloat(a_section, a_key, a_value ? 1.0f : 0.0f, user) != 0.0f;
+                a_value = Number(a_section, a_key, a_value ? 1.0f : 0.0f) != 0.0f;
             }
             void operator()(const char* a_section, const char* a_key, float& a_value, float a_min, float a_max) const
             {
-                a_value = std::clamp(ReadFloat(a_section, a_key, a_value, user), a_min, a_max);
+                a_value = std::clamp(Number(a_section, a_key, a_value), a_min, a_max);
             }
             void operator()(const char* a_section, const char* a_key, int& a_value, int a_min, int a_max) const
             {
-                a_value = std::clamp(static_cast<int>(ReadFloat(a_section, a_key, static_cast<float>(a_value), user)), a_min, a_max);
+                a_value = std::clamp(static_cast<int>(Number(a_section, a_key, static_cast<float>(a_value))), a_min, a_max);
             }
             void operator()(const char* a_section, const char* a_key, std::uint32_t& a_value) const
             {
-                a_value = static_cast<std::uint32_t>(std::max(ReadFloat(a_section, a_key, static_cast<float>(a_value), user), 0.0f));
+                a_value = static_cast<std::uint32_t>(std::max(Number(a_section, a_key, static_cast<float>(a_value)), 0.0f));
             }
             void operator()(const char* a_section, const char* a_key, std::string& a_value) const
             {
-                char buf[260];
-                for (const auto file : { "DetailedMiniMap.ini", "DetailedMiniMap_User.ini" }) {
-                    if (!user && file != std::string_view("DetailedMiniMap.ini")) {
-                        break;
-                    }
-                    if (::GetPrivateProfileStringA(a_section, a_key, "", buf, sizeof(buf), IniPath(file).c_str()) > 0) {
-                        a_value = buf;
-                    }
+                if (const auto text = Find(a_section, a_key)) {
+                    a_value = *text;
                 }
             }
         };
 
+        // every setting gathered, then the user ini written whole in one go
         struct Writer
         {
-            void operator()(const char* a_section, const char* a_key, bool& a_value) const
+            std::vector<std::pair<std::string, std::string>> lines;  // section, "key=value"
+
+            void Add(const char* a_section, const char* a_key, std::string a_value) { lines.emplace_back(a_section, std::format("{}={}", a_key, a_value)); }
+
+            void operator()(const char* a_section, const char* a_key, bool& a_value) { Add(a_section, a_key, a_value ? "1" : "0"); }
+            void operator()(const char* a_section, const char* a_key, float& a_value, float, float) { Add(a_section, a_key, std::format("{:g}", a_value)); }
+            void operator()(const char* a_section, const char* a_key, int& a_value, int, int) { Add(a_section, a_key, std::to_string(a_value)); }
+            void operator()(const char* a_section, const char* a_key, std::uint32_t& a_value) { Add(a_section, a_key, std::to_string(a_value)); }
+            void operator()(const char* a_section, const char* a_key, std::string& a_value) { Add(a_section, a_key, a_value); }
+
+            void Write() const
             {
-                WriteFloat(a_section, a_key, a_value ? 1.0f : 0.0f);
-            }
-            void operator()(const char* a_section, const char* a_key, float& a_value, float, float) const
-            {
-                WriteFloat(a_section, a_key, a_value);
-            }
-            void operator()(const char* a_section, const char* a_key, int& a_value, int, int) const
-            {
-                WriteFloat(a_section, a_key, static_cast<float>(a_value));
-            }
-            void operator()(const char* a_section, const char* a_key, std::uint32_t& a_value) const
-            {
-                WriteFloat(a_section, a_key, static_cast<float>(a_value));
-            }
-            void operator()(const char* a_section, const char* a_key, std::string& a_value) const
-            {
-                ::WritePrivateProfileStringA(a_section, a_key, a_value.c_str(), IniPath("DetailedMiniMap_User.ini").c_str());
+                std::string text = "; Detailed MiniMap - your settings (the in-game menu writes this file; it overrides DetailedMiniMap.ini)\n";
+                std::vector<std::string> sections;
+                for (const auto& [section, line] : lines) {
+                    if (std::ranges::find(sections, section) == sections.end()) {
+                        sections.push_back(section);
+                    }
+                }
+                for (const auto& section : sections) {
+                    text += std::format("\n[{}]\n", section);
+                    for (const auto& [s, line] : lines) {
+                        if (s == section) {
+                            text += line + '\n';
+                        }
+                    }
+                }
+                const auto    path = IniPath("DetailedMiniMap_User.ini");
+                std::ofstream file(path, std::ios::binary | std::ios::trunc);
+                if (!file || !file.write(text.data(), static_cast<std::streamsize>(text.size()))) {
+                    logger::warn("ini: {} could not be written", path.string());
+                }
             }
         };
 
@@ -118,6 +176,7 @@ namespace Settings
             a_f("Map", "ToggleMod", m.toggleMod);
             a_f("Map", "ToggleKeyPad", m.toggleKeyPad);
             a_f("Map", "ToggleModPad", m.toggleModPad);
+            a_f("Map", "ToggleHold", m.toggleHold);
             a_f("Map", "Visible", m.visible);
             a_f("Map", "Language", m.language, -1, Lang::kLanguages - 1);
             a_f("Map", "MinimapSize", m.minimapSize, 100.0f, 600.0f);
@@ -127,6 +186,7 @@ namespace Settings
             a_f("Map", "NorthUp", m.northUp);
             a_f("Map", "MinimapRound", m.minimapRound);
             a_f("Map", "MinimapCorner", m.minimapCorner, 0.0f, 150.0f);
+            a_f("Map", "MinimapFrame", m.minimapFrame);
             a_f("Map", "Anchor", m.anchor, 0, 3);
             a_f("Map", "OffsetX", m.offsetX, 0.0f, 2000.0f);
             a_f("Map", "OffsetY", m.offsetY, 0.0f, 2000.0f);
@@ -135,6 +195,8 @@ namespace Settings
             a_f("Map", "IconFadeOut", m.iconFadeOut, 0.0f, 3.0f);
             a_f("Map", "IconRange", m.iconRange, 0.0f, 20000.0f);
             a_f("Map", "MinimapOpacity", m.minimapOpacity, 0.1f, 1.0f);
+            a_f("Map", "HideEmpty", m.hideEmpty);
+            a_f("Map", "GroupIcons", m.groupIcons);
             for (std::size_t i = 0; i < m.show.size(); ++i) {
                 const std::string key = std::string("Show_") + Icons::File(static_cast<Icons::Kind>(i));
                 a_f("Icons", key.c_str(), m.show[i]);
@@ -142,6 +204,7 @@ namespace Settings
             a_f("Map", "Cut", m.cut);
             a_f("Map", "CutHeight", m.cutHeight, 80.0f, 2000.0f);
             a_f("Map", "QuestBeam", m.questBeam);
+            a_f("Map", "BeamNearest", m.beamNearest);
             a_f("Map", "BeamKey", m.beamKey);
             a_f("Map", "BeamMod", m.beamMod);
             a_f("Map", "BeamKeyPad", m.beamKeyPad);
@@ -151,6 +214,7 @@ namespace Settings
             a_f("Map", "LocalMapMod", m.localMapMod);
             a_f("Map", "LocalMapKeyPad", m.localMapKeyPad);
             a_f("Map", "LocalMapModPad", m.localMapModPad);
+            a_f("Map", "LocalMapHold", m.localMapHold);
             a_f("Map", "ZoomInKey", m.zoomInKey);
             a_f("Map", "ZoomInMod", m.zoomInMod);
             a_f("Map", "ZoomInKeyPad", m.zoomInKeyPad);
@@ -202,7 +266,11 @@ namespace Settings
 
     void Save()
     {
-        Each(Writer{});
+        static std::mutex lock;  // the menu and the keys both save: one at a time
+        std::scoped_lock  guard(lock);
+        Writer            writer;
+        Each(writer);
+        writer.Write();
         ApplyLog();
     }
 

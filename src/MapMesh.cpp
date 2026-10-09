@@ -4,6 +4,8 @@
 
 #include <d3d11.h>
 #include <d3dcompiler.h>
+#include <fstream>
+#include <nlohmann/json.hpp>
 #include <thread>
 
 namespace MapMesh
@@ -201,6 +203,157 @@ namespace MapMesh
             return base && (base->Is(RE::FormType::Tree) || base->Is(RE::FormType::Flora) || base->Is(RE::FormType::Grass));
         }
 
+        // ---- the mesh filter: Data/SKSE/Plugins/DetailedMiniMap/MeshFilter.json - two lists of words looked for in a
+        // mesh's name and its model's path (any case): "Blacklist" leaves such meshes off the map ("@rule": one of the
+        // mod's own rules, on - a rule not listed is off; no file: all on), "Whitelist" keeps them whatever the
+        // blacklist says ("word = water": drawn as water). Read when a game is loaded (main thread)
+        struct FilterWord
+        {
+            std::string word;  // lower case (a rule: its name)
+            bool        keep = false;
+            bool        water = false;
+            bool        rule = false;
+        };
+        std::vector<FilterWord> filter;
+        bool                    filterRead = false;
+        bool                    filterFound = false;  // the file was there
+
+        std::vector<FilterWord> ReadFilter()
+        {
+            std::vector<FilterWord> out;
+            const auto              path = std::filesystem::current_path() / "Data/SKSE/Plugins/DetailedMiniMap/MeshFilter.json";
+            std::ifstream           file(path);
+            filterFound = false;
+            if (!file.is_open()) {
+                return out;
+            }
+            // comments (// and /* */) allowed; a broken file: the mod's defaults, said in the log
+            const auto json = nlohmann::json::parse(file, nullptr, false, true);
+            if (json.is_discarded() || !json.is_object()) {
+                logger::warn("MeshFilter.json: not valid JSON - the built-in filter instead");
+                return out;
+            }
+            filterFound = true;
+            const auto trim = [](std::string_view a_s) {
+                const auto first = a_s.find_first_not_of(" \t\r\n");
+                const auto last = a_s.find_last_not_of(" \t\r\n");
+                return first == std::string_view::npos ? std::string() : std::string(a_s.substr(first, last - first + 1));
+            };
+            const auto lower = [](std::string a_s) {
+                std::ranges::transform(a_s, a_s.begin(), [](char a_c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(a_c))); });
+                return a_s;
+            };
+            // a section by its name, any case
+            const auto section = [&](std::string_view a_name) -> const nlohmann::json* {
+                for (const auto& [key, value] : json.items()) {
+                    if (lower(key) == a_name && value.is_array()) {
+                        return &value;
+                    }
+                }
+                return nullptr;
+            };
+            for (const auto [name, keep] : { std::pair{ "blacklist", false }, std::pair{ "whitelist", true } }) {
+                const auto list = section(name);
+                for (std::size_t i = 0; list && i < list->size(); ++i) {
+                    if (!(*list)[i].is_string()) {
+                        continue;
+                    }
+                    auto       text = trim((*list)[i].get<std::string>());
+                    FilterWord f;
+                    f.keep = keep;
+                    if (!keep && text.starts_with('@')) {  // a rule (the blacklist only)
+                        f.rule = true;
+                        text = trim(std::string_view(text).substr(1));
+                    }
+                    if (const auto eq = text.find('='); eq != std::string::npos) {  // "word = water" (the whitelist)
+                        f.water = keep && lower(trim(std::string_view(text).substr(eq + 1))) == "water";
+                        text = trim(std::string_view(text).substr(0, eq));
+                    }
+                    if (!text.empty()) {
+                        f.word = lower(std::move(text));
+                        out.push_back(std::move(f));
+                    }
+                }
+            }
+            return out;
+        }
+
+        void ReadFilterOnce()
+        {
+            if (!filterRead) {
+                filter = ReadFilter();
+                filterRead = true;
+            }
+        }
+
+        // one of the mod's own rules: on while the file lists it (no file: every rule on)
+        bool Rule(std::string_view a_name)
+        {
+            ReadFilterOnce();
+            return !filterFound || std::ranges::any_of(filter, [&](const FilterWord& a_f) { return a_f.rule && a_f.word == a_name; });
+        }
+
+        // the reference whose 3D a shape is part of (the root's user data)
+        RE::TESObjectREFR* OwnerOf(const RE::NiAVObject* a_obj)
+        {
+            for (auto at = a_obj; at; at = at->parent) {
+                if (const auto ref = at->GetUserData()) {
+                    return ref;
+                }
+            }
+            return nullptr;
+        }
+
+        const char* ModelOf(RE::TESObjectREFR* a_owner)
+        {
+            const auto base = a_owner ? a_owner->GetBaseObject() : nullptr;
+            const auto model = base ? base->As<RE::TESModel>() : nullptr;
+            return model ? model->GetModel() : nullptr;
+        }
+
+        // what the filter's words say of a mesh: the first word found (a kept one before a left-off one), nullptr:
+        // nothing (no file: the effects folder left off, as the shipped file has it)
+        const FilterWord* Filtered(RE::TESObjectREFR* a_owner, const RE::NiAVObject* a_shape)
+        {
+            ReadFilterOnce();
+            static const std::vector<FilterWord> fallback{ { "effects\\" } };
+            const auto&                          words = filterFound ? filter : fallback;
+            const auto                           contains = [](std::string_view a_s, std::string_view a_word) {
+                return !a_s.empty() && !std::ranges::search(a_s, a_word, [](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == b; }).empty();
+            };
+            const std::string_view name(a_shape->name.c_str());
+            const auto             path = ModelOf(a_owner);
+            const std::string_view model(path ? path : "");
+            const FilterWord*      found = nullptr;
+            for (const auto& f : words) {
+                if (!f.rule && (contains(name, f.word) || contains(model, f.word))) {
+                    if (f.keep) {
+                        return &f;
+                    }
+                    found = found ? found : &f;
+                }
+            }
+            return found;
+        }
+
+        // the mod's own rules for what is no solid ground or wall (each one a "@rule" of the filter): see-through (alpha
+        // blended - smoke, light shafts, cobwebs: nothing solid is drawn so), refracting (the shimmer over a fire), a decal
+        // (blood, dirt), an effect's shader (fire, magic, glow - anything but the lit and the water ones)
+        bool LeftOffByRules(const RE::BSShaderProperty* a_shader, const RE::NiAlphaProperty* a_alpha)
+        {
+            using Flag = RE::BSShaderProperty::EShaderPropertyFlag;
+            if (Rule("effectshader") && !netimmerse_cast<const RE::BSLightingShaderProperty*>(a_shader)) {
+                return true;
+            }
+            if (Rule("seethrough") && a_alpha && a_alpha->GetAlphaBlending()) {
+                return true;
+            }
+            if (Rule("refraction") && a_shader->flags.any(Flag::kRefraction)) {
+                return true;
+            }
+            return Rule("decal") && a_shader->flags.any(Flag::kDecal, Flag::kDynamicDecal);
+        }
+
         bool IsLooseItem(const RE::TESBoundObject* a_base)
         {
             switch (a_base->GetFormType()) {
@@ -225,7 +378,7 @@ namespace MapMesh
         // no foliage (alpha-tested planks, thatch, fences stay)
         struct CollectStats  // what was left out (for the log)
         {
-            int hidden = 0, actors = 0, foliage = 0, shader = 0, other = 0, markers = 0, items = 0, tiny = 0;
+            int hidden = 0, actors = 0, foliage = 0, shader = 0, other = 0, markers = 0, items = 0, tiny = 0, filtered = 0;
         };
         CollectStats collectStats;  // of the last harvest (main thread)
 
@@ -289,18 +442,30 @@ namespace MapMesh
                 return;
             }
             const auto& rd = geom->GetGeometryRuntimeData();
-            // water is taken too (drawn as water), every other non-lighting shader is an effect
-            const bool water = rd.shaderProperty && netimmerse_cast<RE::BSWaterShaderProperty*>(rd.shaderProperty.get());
-            if (rd.skinInstance || !rd.rendererData || !rd.shaderProperty || (!water && !netimmerse_cast<RE::BSLightingShaderProperty*>(rd.shaderProperty.get()))) {
+            if (rd.skinInstance || !rd.rendererData || !rd.shaderProperty) {
                 ++collectStats.shader;
                 return;
             }
-            if (!water && rd.alphaProperty && rd.alphaProperty->GetAlphaTesting() && IsFoliage(a_owner, rd.shaderProperty.get())) {
+            // the filter's words first: left off, or kept whatever the rules below say
+            const auto rule = Filtered(a_owner, a_obj);
+            if (rule && !rule->keep) {
+                ++collectStats.filtered;
+                return;
+            }
+            const bool kept = rule != nullptr;
+            // water is taken too (drawn as water); the rest by the mod's rules (each a "@rule" of the filter)
+            const bool water = (kept && rule->water) || netimmerse_cast<RE::BSWaterShaderProperty*>(rd.shaderProperty.get());
+            if (!kept && !water && LeftOffByRules(rd.shaderProperty.get(), rd.alphaProperty.get())) {
+                ++collectStats.shader;
+                return;
+            }
+            // trees, bushes, grass: a canopy over the ground
+            if (!kept && !water && Rule("foliage") && rd.alphaProperty && rd.alphaProperty->GetAlphaTesting() && IsFoliage(a_owner, rd.shaderProperty.get())) {
                 ++collectStats.foliage;
                 return;
             }
             // small things (a plate, a cup, a coin purse): under a pixel on any map, yet often most of a city cell's triangles
-            if (!water && a_obj->worldBound.radius < kTinyRadius) {
+            if (!kept && !water && Rule("tiny") && a_obj->worldBound.radius < kTinyRadius) {
                 ++collectStats.tiny;
                 return;
             }
@@ -505,6 +670,9 @@ namespace MapMesh
             if (shader && netimmerse_cast<RE::BSWaterShaderProperty*>(shader)) {
                 return kWater;
             }
+            if (const auto rule = Filtered(OwnerOf(a_shape), a_shape); rule && rule->water) {  // "+word = water" (a waterfall's mesh)
+                return kWater;
+            }
             return IsLand(a_shape) ? kLand : kObjects;
         }
 
@@ -690,19 +858,34 @@ namespace MapMesh
             return out;
         }
 
+        // a rebuilt part already on the map does not fade in again: part 0 (the many small things together) as it was
+        // whatever changed in it; a part of its own (the landscape, water, a big mesh) when an old one of its kind lay
+        // where it lies - a landscape block the game (or a renderer mod) swapped for one a little different was a
+        // square of ground blinking out and in again
         void Inherit(CellMesh& a_mesh, std::uint32_t a_part, const std::vector<WasShown>& a_old)
         {
-            const float box[6]{ a_mesh.minX, a_mesh.minY, a_mesh.minZ, a_mesh.maxX, a_mesh.maxY, a_mesh.maxZ };
+            float best = 0.0f;
             for (const auto& o : a_old) {
-                // part 0 holds the many small things together: kept as it was whatever changed in it
-                bool same = a_part == 0 ? o.part == 0 : o.part != 0 && o.kind == a_mesh.kind && (a_mesh.kind != kObjects || o.triangles == a_mesh.triangles);
-                for (int i = 0; same && a_part != 0 && i < 6; ++i) {
-                    same = std::abs(o.box[i] - box[i]) < 2.0f;
+                if (a_part == 0 ? o.part != 0 : o.part == 0 || o.kind != a_mesh.kind) {
+                    continue;
                 }
-                if (same) {
+                if (a_part == 0) {
                     a_mesh.shownAt = o.at;
                     return;
                 }
+                // how much of the smaller of the two the other covers (ground plan)
+                const float w = std::min(o.box[3], a_mesh.maxX) - std::max(o.box[0], a_mesh.minX);
+                const float h = std::min(o.box[4], a_mesh.maxY) - std::max(o.box[1], a_mesh.minY);
+                if (w <= 0.0f || h <= 0.0f) {
+                    continue;
+                }
+                const float area = std::min((o.box[3] - o.box[0]) * (o.box[4] - o.box[1]), (a_mesh.maxX - a_mesh.minX) * (a_mesh.maxY - a_mesh.minY));
+                if (area > 0.0f && w * h >= area * 0.5f && (best == 0.0f || o.at < best)) {
+                    best = o.at;  // the earliest: shown already, no fade
+                }
+            }
+            if (best > 0.0f) {
+                a_mesh.shownAt = best;
             }
         }
 
@@ -1989,6 +2172,20 @@ float4 PS(VSOut i) : SV_Target
     RE::FormID CurrentSpace()
     {
         return mapSpace;
+    }
+
+    void ReloadFilter()
+    {
+        auto       now = ReadFilter();
+        const auto same = [](const FilterWord& a, const FilterWord& b) { return a.word == b.word && a.keep == b.keep && a.water == b.water && a.rule == b.rule; };
+        const bool changed = !filterRead || !std::ranges::equal(now, filter, same);
+        filter = std::move(now);
+        filterRead = true;
+        logger::info("map 3d: mesh filter - {} words", filter.size());
+        if (changed) {
+            std::scoped_lock guard(meshLock);
+            DropAllGeometry();  // everything read again by the new words
+        }
     }
 
     void Prepare()

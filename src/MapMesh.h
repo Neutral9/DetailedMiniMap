@@ -38,6 +38,9 @@ namespace MapMesh
 
     RE::FormID CurrentSpace();  // main thread
 
+    // main thread, a game loaded: Data/SKSE/Plugins/DetailedMiniMap/MeshFilter.json read again (changed: the map rebuilt)
+    void ReloadFilter();
+
     // main thread, the detailed log: what the minimap's whole update took this frame (ms)
     void NoteFrame(float a_ms);
 }

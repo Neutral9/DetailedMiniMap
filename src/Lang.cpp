@@ -16,7 +16,7 @@ namespace Lang
             "SecOther", "DepthShade", "FadeTime", "ResetLook", "TabMap", "TabLook", "Enemies", "Guards", "Residents", "Followers", "Animals", "Doors", "Food", "Potions",
             "Chests", "Weapons", "Armor", "Loot", "Quests", "Bodies", "Plants", "Ores", "SecPosition", "Anchor", "TopLeft", "TopRight", "BottomLeft", "BottomRight",
             "OffsetX", "OffsetY", "SecQuests", "QuestBeam", "BeamKey", "LocalMap", "SecDebug", "DebugLog", "LocalMapKey", "ZoomInKey", "ZoomOutKey",
-            "MinimapOpacity", "IconRange", "Everywhere", "ResetMap", "HintWorld", "HintClose", "Legend", "Unbind", "IconStyle" };
+            "MinimapOpacity", "IconRange", "Everywhere", "ResetMap", "HintWorld", "HintClose", "Legend", "Unbind", "IconStyle", "ToggleHold", "MinimapFrame", "BeamNearest", "HideEmpty", "GroupIcons", "LocalMapHold" };
 
         // Data/SKSE/Plugins/DetailedMiniMap/Translations/<code>.txt, in the order of the Language setting
         constexpr const char* kCodes[kLanguages] = { "ru", "en", "fr", "it", "de", "es", "pl", "zh", "ja" };

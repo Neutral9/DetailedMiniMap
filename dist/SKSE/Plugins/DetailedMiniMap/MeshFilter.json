@@ -1,0 +1,32 @@
+// Detailed MiniMap - which meshes go on the map. Read again whenever a game is loaded: edit, save, load a save (the
+// map is rebuilt when the lists changed). Comments like this one are allowed.
+//
+// Each entry is a word looked for in a mesh's name and in its model's path (Meshes\...), any case.
+//   "Blacklist": such meshes are left off the map. "@rule" turns on one of the mod's own rules (take it out: off).
+//   "Whitelist": such meshes are kept, whatever the blacklist says (the whitelist wins).
+//                "word = water": kept and drawn as water.
+{
+    "Blacklist": [
+        // ---- the mod's rules
+        "@seethrough",     // see-through meshes (alpha blended): smoke, light shafts, cobwebs, mist
+        "@refraction",     // the heat shimmer over a fire
+        "@decal",          // blood, dirt, scorch marks on floors and walls
+        "@effectshader",   // meshes with an effect's shader: fire, magic, glow
+        "@foliage",        // trees, bushes and grass: a canopy over the ground
+        "@tiny",           // small things (plates, cups, coins): under a pixel, yet most of a city's triangles
+
+        // ---- by name or path
+        "effects\\",       // everything from Meshes\Effects (FXSmoke..., FXMist..., light rays)
+        "smoke",
+        "fxsteam",
+        "fxmist",
+        "fxfog",
+        "lightray",
+        "godray",
+        "lightbeam",
+        "heatdistort"
+    ],
+    "Whitelist": [
+        "fxwater = water"  // rivers, waterfalls and their foam (Meshes\Effects\FXWater...)
+    ]
+}

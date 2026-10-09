@@ -32,6 +32,7 @@ namespace
             MiniMap::Register();
         } else if (a_msg->type == SKSE::MessagingInterface::kPostLoadGame || a_msg->type == SKSE::MessagingInterface::kNewGame) {
             MiniMap::OnGameLoaded();
+            MapMesh::ReloadFilter();
         }
     }
 }

@@ -35,9 +35,11 @@ namespace MiniMap
         std::atomic<float> screenH = 0.0f;
 
         constexpr std::uint32_t     kEscape = 1;
+        constexpr RE::FormID        kMannequinRace = 0x0010760A;  // ManakinRace (Skyrim.esm)
         constexpr float             kShowFade = 0.3f;     // seconds the minimap takes to fade in or out (its key)
         std::atomic<std::uint32_t*> captureSlot = nullptr;  // the key setting being bound from the menu
         float                       shown = 0.0f;         // main thread: how much of the minimap shows, 0..1 (fading to Settings visible; in on the first frame)
+        bool                        holdShown = false;    // ...its key held now (shown only while held: the setting)
 
         // the mouse, for the local map (main thread: input events and the map menu's update)
         bool mouseHeld = false;     // the left button down
@@ -207,6 +209,13 @@ namespace MiniMap
         std::unordered_set<RE::FormID>                       lookedInto;
         std::unordered_map<RE::FormID, std::pair<float, bool>> lootCache;  // per body: iconClock it was looked at, something to take
 
+        // an item one can take: not a leveled list (an inventory lists those of the form too - what it might hold,
+        // not what it does) and playable
+        bool Takeable(RE::TESBoundObject& a_object)
+        {
+            return !a_object.Is(RE::FormType::LeveledItem) && a_object.GetPlayable();
+        }
+
         bool WorthALook(RE::Actor* a_body)
         {
             const auto id = a_body->GetFormID();
@@ -220,10 +229,37 @@ namespace MiniMap
             auto& [at, worth] = lootCache.try_emplace(id, -100.0f, false).first->second;
             if (iconClock - at >= 2.0f || iconClock < at) {
                 at = iconClock;
-                const auto items = a_body->GetInventory([](RE::TESBoundObject& a_object) { return a_object.GetPlayable(); });
+                const auto items = a_body->GetInventory(Takeable);
                 worth = std::ranges::any_of(items, [](const auto& a_item) { return a_item.second.first > 0; });
             }
             return worth;
+        }
+
+        // a container with something to take (looked at every 2 seconds at most). One the game has not filled yet (never
+        // opened: its leveled lists not rolled) counts by what its form holds
+        std::unordered_map<RE::FormID, std::pair<float, bool>> itemCache;  // per container: iconClock it was looked at, something in it
+
+        bool HasLoot(RE::TESObjectREFR* a_ref, RE::TESBoundObject* a_base)
+        {
+            auto& [at, full] = itemCache.try_emplace(a_ref->GetFormID(), -100.0f, true).first->second;
+            if (iconClock - at < 2.0f && iconClock >= at) {
+                return full;
+            }
+            at = iconClock;
+            if (!a_ref->extraList.HasType<RE::ExtraContainerChanges>()) {
+                const auto container = a_base->As<RE::TESContainer>();
+                full = false;
+                if (container) {
+                    container->ForEachContainerObject([&](RE::ContainerObject& a_entry) {
+                        full = full || a_entry.count > 0;
+                        return full ? RE::BSContainer::ForEachResult::kStop : RE::BSContainer::ForEachResult::kContinue;
+                    });
+                }
+                return full;
+            }
+            const auto items = a_ref->GetInventory(Takeable);
+            full = std::ranges::any_of(items, [](const auto& a_item) { return a_item.second.first > 0; });
+            return full;
         }
 
         // a plant still to pick: flora or a bush with an ingredient, not picked yet
@@ -287,7 +323,7 @@ namespace MiniMap
                         statics.push_back({ a_ref->GetPosition(), Kind::kDoor, a_ref->GetFormID() });
                     }
                 } else if (base->Is(RE::FormType::Container)) {
-                    if (merchants.contains(a_ref->GetFormID())) {
+                    if (merchants.contains(a_ref->GetFormID()) || (Settings::Map().hideEmpty && !HasLoot(a_ref, base))) {
                         return RE::BSContainer::ForEachResult::kContinue;
                     }
                     statics.push_back({ a_ref->GetPosition(), Kind::kContainer, a_ref->GetFormID() });
@@ -308,18 +344,23 @@ namespace MiniMap
             });
         }
 
-        // an enemy: willing to fight (a fox or a deer is "hostile" too, but unaggressive: it runs - its combat target is
-        // the one it runs from), and hostile or fighting the player or a follower right now (a guard turned on you)
+        // an enemy: fighting the player or a follower right now and not running from them (a fox or a deer in "combat"
+        // only flees; a guard turned on you fights), or, not in that fight yet, hostile and aggressive by nature (a
+        // wolf that has not seen you; a fox is "hostile" too, but unaggressive)
         bool Threat(RE::Actor* a_actor, RE::PlayerCharacter* a_player)
         {
-            if (a_actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kAggression) <= 0.0f) {
+            const auto& rd = a_actor->GetActorRuntimeData();
+            if (const auto target = rd.currentCombatTarget.get(); target && (target.get() == a_player || target->IsPlayerTeammate())) {
+                const auto combat = rd.combatController;
+                return !(combat && combat->state && combat->IsFleeing());
+            }
+            if (!a_actor->IsHostileToActor(a_player)) {
                 return false;
             }
-            if (a_actor->IsHostileToActor(a_player)) {
-                return true;
-            }
-            const auto target = a_actor->GetActorRuntimeData().currentCombatTarget.get();
-            return target && (target.get() == a_player || target->IsPlayerTeammate());
+            const auto base = a_actor->GetActorBase();
+            const bool aggressive = (base && base->GetAggressionLevel() != RE::ACTOR_AGGRESSION::kUnaggressive) ||
+                                    a_actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kAggression) > 0.0f;
+            return aggressive;
         }
 
         // the characters as they stand this frame, within a_range
@@ -331,6 +372,10 @@ namespace MiniMap
                 const auto ptr = lists->highActorHandles[i].get();
                 const auto actor = ptr.get();
                 if (!actor || actor->IsDead() || actor->IsDisabled() || !actor->Is3DLoaded() || actor->GetPosition().GetDistance(pos) > a_range) {
+                    continue;
+                }
+                // mannequins (Hearthfire homes, Breezehome): actors of their own race, standing there for the armour
+                if (const auto race = actor->GetRace(); race && race->GetFormID() == kMannequinRace) {
                     continue;
                 }
                 Kind kind;
@@ -397,7 +442,10 @@ namespace MiniMap
         {
             RE::ObjectRefHandle ref;  // followed every frame (a target walking about)
             RE::NiPoint3        pos;
-            std::string         name;  // the quest's
+            std::string         name;            // the quest's
+            RE::FormID          quest = 0;
+            bool                active = false;  // set active in the journal (the compass shows it)
+            float               beyond = 0.0f;   // a target past doors: the way on from the door here to it (straight, world units)
         };
         std::vector<QuestPoint> quests;  // main thread: gathered with the statics
 
@@ -414,6 +462,15 @@ namespace MiniMap
             return world && a_ref->GetWorldspace() == world;
         }
 
+        // where a door on a quest target's way lets out: its own teleport's marker, else what the way says
+        RE::NiPoint3 ExitOf(const RE::TeleportPath::TeleportLink& a_link)
+        {
+            if (const auto tele = a_link.ref ? a_link.ref->extraList.GetByType<RE::ExtraTeleport>() : nullptr; tele && tele->teleportData) {
+                return tele->teleportData->position;
+            }
+            return a_link.teleportLocation;
+        }
+
         void GatherQuests(RE::PlayerCharacter* a_player)
         {
             quests.clear();
@@ -422,7 +479,7 @@ namespace MiniMap
             {
                 RE::BSSpinLockGuard guard(a_player->GetQuestTargetsLock());
                 for (const auto& [quest, list] : a_player->GetQuestTargets()) {
-                    if (!quest || !list) {
+                    if (!quest || !list || !quest->IsActive()) {  // only the quests set active in the journal (as the compass shows them)
                         continue;
                     }
                     for (const auto target : *list) {
@@ -438,18 +495,29 @@ namespace MiniMap
                 RE::ObjectRefHandle              handle;
                 target->GetTargetRef(handle, false, quest);
                 held = handle.get();
+                float beyond = 0.0f;
                 if (held && HereToo(held.get(), a_player)) {
                     at = held.get();
                 } else {
-                    for (const auto& link : target->teleportPath.teleportRefs) {
-                        if (link.ref && HereToo(link.ref, a_player)) {
-                            at = link.ref;
-                            break;
+                    // the first door on the way that is here; past it the way goes on: from where each door lets out to
+                    // the next door, and from the last to the target (straight, a space at a time)
+                    const auto& links = target->teleportPath.teleportRefs;
+                    for (std::uint32_t i = 0; i < links.size(); ++i) {
+                        if (!links[i].ref || !HereToo(links[i].ref, a_player)) {
+                            continue;
                         }
+                        at = links[i].ref;
+                        for (std::uint32_t j = i; j < links.size(); ++j) {
+                            const auto next = j + 1 < links.size() && links[j + 1].ref ? links[j + 1].ref->GetPosition() :
+                                              held                                    ? held->GetPosition() :
+                                                                                        target->teleportPath.end;
+                            beyond += ExitOf(links[j]).GetDistance(next);
+                        }
+                        break;
                     }
                 }
                 if (at) {
-                    quests.push_back({ at->CreateRefHandle(), at->GetPosition(), quest->GetFullName() ? quest->GetFullName() : "" });
+                    quests.push_back({ at->CreateRefHandle(), at->GetPosition(), quest->GetFullName() ? quest->GetFullName() : "", quest->GetFormID(), quest->IsActive(), beyond });
                 }
             }
         }
@@ -465,7 +533,38 @@ namespace MiniMap
             RE::FormID                space = 0;
             std::vector<Marker>       markers;
             std::vector<RE::NiPoint3> quests;
+            std::vector<RE::NiPoint3> beams;  // where the beams go
         };
+
+        // the beams' targets: one a quest set active in the journal, to its nearest target; or (the setting) one beam
+        // only, to the nearest target of any quest. Nearest by the whole way: to where it is shown here (the target, or
+        // the door towards it) and on past the doors to the target itself - a door close by to a far place is far
+        std::vector<RE::NiPoint3> BeamTargets(const RE::NiPoint3& a_player)
+        {
+            std::vector<RE::NiPoint3> out;
+            if (!Settings::Map().questBeam) {
+                return out;
+            }
+            const auto distance = [&](const QuestPoint& a_q) {
+                const float dx = a_q.pos.x - a_player.x, dy = a_q.pos.y - a_player.y;
+                return std::sqrt(dx * dx + dy * dy) + a_q.beyond;
+            };
+            std::map<RE::FormID, const QuestPoint*> nearest;  // per quest, or (one beam) all under 0
+            const bool                              one = Settings::Map().beamNearest;
+            for (const auto& q : quests) {
+                if (!one && !q.active) {
+                    continue;
+                }
+                auto& best = nearest[one ? 0 : q.quest];
+                if (!best || distance(q) < distance(*best)) {
+                    best = &q;
+                }
+            }
+            for (const auto& [quest, q] : nearest) {
+                out.push_back(q->pos);
+            }
+            return out;
+        }
 
         World TakeWorld(RE::PlayerCharacter* a_player, bool a_local)
         {
@@ -493,6 +592,7 @@ namespace MiniMap
                 }
                 w.quests.push_back(q.pos);
             }
+            w.beams = BeamTargets(w.player);
             return w;
         }
 
@@ -578,6 +678,8 @@ namespace MiniMap
             float alpha;
             float      shade = 1.0f;  // darker on another level than the character's
             RE::FormID id = 0;         // the reference (a quest target: its index in quests)
+            int        count = 1;      // icons of its kind merged into it (close together on the picture)
+            float      wx = 0, wy = 0; // where it is in the world (grouped by: the same whichever way the map turns)
         };
         // on another level than the character (an upper floor, a cellar, a ledge above): dimmer the farther up or down
         float LevelShade(float a_dz)
@@ -594,8 +696,7 @@ namespace MiniMap
             float                        px = 0, py = 0;                      // the character on it
             std::vector<ScreenIcon>      icons;
             std::vector<ScreenIcon>      quests;         // quest targets (pulled onto the rim when past it)
-            bool                         beam = false;   // the beam to the nearest quest target, along beamPath (from the character)
-            std::vector<P2>              beamPath;
+            std::vector<std::vector<P2>> beams;          // the beams to the quest targets (each from the character)
             float                        arrowAngle = 0.0f;
             float                        alpha = 1.0f;   // the whole map: fading in or out
             float                        cursorX = -1.0f, cursorY = -1.0f;  // the local map: the menu's cursor (drawn over the map)
@@ -609,11 +710,10 @@ namespace MiniMap
         Frame      frame;       // the minimap
         Frame      localFrame;  // the local map
 
-        // ---- the beam's way: the walking path over the navmesh (Pathing) while it is for this target and still runs by
-        // the character, else straight (main thread)
-        std::vector<RE::NiPoint3> pathNow;     // the last path found
-        RE::NiPoint3              pathTarget;  // ...and its target
-        float                     sincePath = 1.0f;
+        // ---- the beams' ways: the walking path over the navmesh (Pathing) while it is for that target and still runs
+        // by the character, else straight (main thread)
+        std::vector<Pathing::Found> pathsNow;  // the last paths found, with their targets
+        float                       sincePath = 1.0f;
 
         float ToSegment2D(const RE::NiPoint3& a_p, const RE::NiPoint3& a_a, const RE::NiPoint3& a_b)
         {
@@ -623,47 +723,44 @@ namespace MiniMap
             return std::sqrt(x * x + y * y);
         }
 
-        std::vector<RE::NiPoint3> BeamWay(const RE::NiPoint3& a_player, const RE::NiPoint3& a_target)
+        // a way from where the character is now: the rest of a_path from its leg nearest to the character (among the
+        // first a_legs), then straight on to the target where the way came short of it; none: the character left it
+        std::optional<std::vector<RE::NiPoint3>> Along(const RE::NiPoint3& a_player, const std::vector<RE::NiPoint3>& a_path, std::size_t a_legs, const RE::NiPoint3& a_target)
         {
-            if (pathNow.size() >= 2 && pathTarget.GetDistance(a_target) < 200.0f) {
-                // where along it the character is now: the nearest of its first legs
-                std::size_t leg = 0;
-                float       best = FLT_MAX;
-                for (std::size_t i = 0; i + 1 < pathNow.size() && i < 8; ++i) {
-                    if (const float d = ToSegment2D(a_player, pathNow[i], pathNow[i + 1]); d < best) {
-                        best = d;
-                        leg = i;
-                    }
-                }
-                if (best < 400.0f) {
-                    std::vector<RE::NiPoint3> out{ a_player };
-                    out.insert(out.end(), pathNow.begin() + static_cast<std::ptrdiff_t>(leg) + 1, pathNow.end());
-                    // the navmesh came short of the target (outside the loaded world): straight on from its end
-                    if (out.back().GetDistance(a_target) > 1.0f) {
-                        out.push_back(a_target);
-                    }
-                    return out;
+            std::size_t leg = 0;
+            float       best = FLT_MAX;
+            for (std::size_t i = 0; i + 1 < a_path.size() && i < a_legs; ++i) {
+                if (const float d = ToSegment2D(a_player, a_path[i], a_path[i + 1]); d < best) {
+                    best = d;
+                    leg = i;
                 }
             }
-            return { a_player, a_target };
-        }
-
-        // the nearest quest target (the beam's)
-        std::optional<RE::NiPoint3> NearestQuest(const RE::NiPoint3& a_player)
-        {
-            std::optional<RE::NiPoint3> out;
-            float                       nearest = FLT_MAX;
-            for (const auto& q : quests) {
-                const float dx = q.pos.x - a_player.x, dy = q.pos.y - a_player.y, d = dx * dx + dy * dy;
-                if (d < nearest) {
-                    nearest = d;
-                    out = q.pos;
-                }
+            if (best >= 400.0f) {
+                return std::nullopt;
+            }
+            std::vector<RE::NiPoint3> out{ a_player };
+            out.insert(out.end(), a_path.begin() + static_cast<std::ptrdiff_t>(leg) + 1, a_path.end());
+            if (out.back().GetDistance(a_target) > 1.0f) {
+                out.push_back(a_target);
             }
             return out;
         }
 
-        // main thread: the navmeshes kept up to date and a new path asked for twice a second
+        std::vector<RE::NiPoint3> BeamWay(const RE::NiPoint3& a_player, const RE::NiPoint3& a_target)
+        {
+            for (const auto& [target, path] : pathsNow) {
+                if (path.size() < 2 || target.GetDistance(a_target) >= 200.0f) {
+                    continue;
+                }
+                if (auto way = Along(a_player, path, 8, a_target)) {
+                    return std::move(*way);
+                }
+                break;
+            }
+            return { a_player, a_target };
+        }
+
+        // main thread: the navmeshes kept up to date and new paths asked for twice a second
         void UpdatePath(RE::PlayerCharacter* a_player, float a_dt, bool a_now)
         {
             if (!Settings::Map().questBeam || quests.empty()) {
@@ -673,11 +770,9 @@ namespace MiniMap
             if (sincePath >= 0.5f || a_now) {
                 sincePath = 0.0f;
                 Pathing::Update(a_player);
-                if (const auto target = NearestQuest(a_player->GetPosition())) {
-                    Pathing::Request(a_player->GetPosition(), *target);
-                }
+                Pathing::Request(a_player->GetPosition(), BeamTargets(a_player->GetPosition()));
             }
-            pathNow = Pathing::Path(pathTarget);
+            pathsNow = Pathing::Paths();
         }
 
         void ClearFrame()
@@ -686,10 +781,51 @@ namespace MiniMap
             frame = {};
         }
 
-        // the markers, the quest targets and the beam of a picture; a_inside(x, y): on the picture, a_rim(x, y): pulled
+        // icons of one kind close together (a room of barrels) merged into one at their middle, bigger the more it
+        // holds; zoomed in they part again (the setting). Close in the world, by the map's scale (a_pxPerUnit): the
+        // same groups whichever way a tilted map turns (on the screen the distances change as it turns - icons would
+        // join and part all the time); measured from each group's first icon, so a group does not creep
+        void GroupIcons(std::vector<ScreenIcon>& a_icons, float a_pxPerUnit)
+        {
+            const auto& s = Settings::Map();
+            if (!s.groupIcons || a_icons.size() < 2 || a_pxPerUnit <= 0.0f) {
+                return;
+            }
+            const float reach = 14.0f * (screenH / 1080.0f) * s.iconSize / a_pxPerUnit;  // about an icon across, in world units
+            std::vector<ScreenIcon> out;
+            std::vector<P2>         first;  // per group: its first icon in the world
+            std::vector<P2>         sum;    // per group: the positions on the picture added up
+            for (const auto& i : a_icons) {
+                std::size_t at = out.size();
+                for (std::size_t g = 0; g < out.size(); ++g) {
+                    const float dx = first[g].first - i.wx, dy = first[g].second - i.wy;
+                    if (out[g].kind == i.kind && dx * dx + dy * dy < reach * reach) {
+                        at = g;
+                        break;
+                    }
+                }
+                if (at == out.size()) {
+                    out.push_back(i);
+                    first.push_back({ i.wx, i.wy });
+                    sum.push_back({ i.x, i.y });
+                    continue;
+                }
+                auto& o = out[at];
+                ++o.count;
+                sum[at].first += i.x;
+                sum[at].second += i.y;
+                o.x = sum[at].first / static_cast<float>(o.count);
+                o.y = sum[at].second / static_cast<float>(o.count);
+                o.alpha = std::max(o.alpha, i.alpha);
+                o.shade = std::max(o.shade, i.shade);
+            }
+            a_icons = std::move(out);
+        }
+
+        // the markers, the quest targets and the beams of a picture (a_pxPerUnit: its scale); a_inside(x, y): on the picture, a_rim(x, y): pulled
         // in to its edge along the line from the character
         template <class ToScreen, class Inside, class Rim>
-        void PlaceMarkers(Frame& a_f, const World& a_world, ToScreen&& a_toScreen, Inside&& a_inside, Rim&& a_rim)
+        void PlaceMarkers(Frame& a_f, const World& a_world, float a_pxPerUnit, ToScreen&& a_toScreen, Inside&& a_inside, Rim&& a_rim)
         {
             for (const auto& m : a_world.markers) {
                 if (!Shown(m.kind)) {
@@ -697,50 +833,43 @@ namespace MiniMap
                 }
                 const auto [x, y] = a_toScreen(m.pos);
                 if (const float edge = a_inside(x, y); edge > 0.0f) {
-                    a_f.icons.push_back({ x, y, m.kind, m.alpha * edge, LevelShade(m.pos.z - a_world.player.z), m.id });
+                    a_f.icons.push_back({ x, y, m.kind, m.alpha * edge, LevelShade(m.pos.z - a_world.player.z), m.id, 1, m.pos.x, m.pos.y });
                 }
             }
-            if (!Shown(Kind::kQuest) && !Settings::Map().questBeam) {
-                return;
-            }
-            float                       nearest = FLT_MAX;
-            std::optional<RE::NiPoint3> target;
-            for (std::size_t i = 0; i < a_world.quests.size(); ++i) {
-                const auto& q = a_world.quests[i];
-                const auto [x, y] = a_rim(a_toScreen(q));
-                if (Shown(Kind::kQuest)) {
+            GroupIcons(a_f.icons, a_pxPerUnit);
+            if (Shown(Kind::kQuest)) {
+                for (std::size_t i = 0; i < a_world.quests.size(); ++i) {
+                    const auto& q = a_world.quests[i];
+                    const auto [x, y] = a_rim(a_toScreen(q));
                     a_f.quests.push_back({ x, y, Kind::kQuest, 1.0f, LevelShade(q.z - a_world.player.z), static_cast<RE::FormID>(i) });
                 }
-                const float dx = q.x - a_world.player.x, dy = q.y - a_world.player.y, d = dx * dx + dy * dy;
-                if (Settings::Map().questBeam && d < nearest) {
-                    nearest = d;
-                    target = q;
+            }
+            // the beams: along their ways, on the screen, ending where they leave the picture
+            for (const auto& target : a_world.beams) {
+                const auto      way = BeamWay(a_world.player, target);
+                std::vector<P2> line;
+                P2              prev = a_toScreen(way[0]);
+                const bool      clip = a_inside(prev.first, prev.second) > 0.0f;  // the character off the picture: the picture's own clip does
+                line.push_back(prev);
+                for (std::size_t i = 1; i < way.size(); ++i) {
+                    const P2 next = a_toScreen(way[i]);
+                    if (!clip || a_inside(next.first, next.second) > 0.0f) {
+                        line.push_back(next);
+                        prev = next;
+                        continue;
+                    }
+                    P2 in = prev, out = next;  // the edge between them
+                    for (int k = 0; k < 14; ++k) {
+                        const P2 mid{ (in.first + out.first) * 0.5f, (in.second + out.second) * 0.5f };
+                        (a_inside(mid.first, mid.second) > 0.0f ? in : out) = mid;
+                    }
+                    line.push_back(in);
+                    break;
+                }
+                if (line.size() >= 2) {
+                    a_f.beams.push_back(std::move(line));
                 }
             }
-            if (!target) {
-                return;
-            }
-            // the beam: along the way, on the screen, ending where it leaves the picture
-            const auto way = BeamWay(a_world.player, *target);
-            P2         prev = a_toScreen(way[0]);
-            const bool clip = a_inside(prev.first, prev.second) > 0.0f;  // the character off the picture: the picture's own clip does
-            a_f.beamPath.push_back(prev);
-            for (std::size_t i = 1; i < way.size(); ++i) {
-                const P2 next = a_toScreen(way[i]);
-                if (!clip || a_inside(next.first, next.second) > 0.0f) {
-                    a_f.beamPath.push_back(next);
-                    prev = next;
-                    continue;
-                }
-                P2 in = prev, out = next;  // the edge between them
-                for (int k = 0; k < 14; ++k) {
-                    const P2 mid{ (in.first + out.first) * 0.5f, (in.second + out.second) * 0.5f };
-                    (a_inside(mid.first, mid.second) > 0.0f ? in : out) = mid;
-                }
-                a_f.beamPath.push_back(in);
-                break;
-            }
-            a_f.beam = a_f.beamPath.size() >= 2;
         }
 
         Frame BuildMinimap(const World& a_world, float a_w, float a_h)
@@ -765,7 +894,7 @@ namespace MiniMap
             const float cx = f.px, cy = f.py, rim = size * 0.5f;
             f.round = s.minimapRound;
             PlaceMarkers(
-                f, a_world,
+                f, a_world, o.Scale(),
                 [&](const RE::NiPoint3& a_p) {
                     const auto p = o.ToScreen(a_p);
                     return P2{ f.mx0 + p.first, f.my0 + p.second };
@@ -918,7 +1047,7 @@ namespace MiniMap
             f.arrowAngle = a_world.heading;
             const float inset = 14.0f * k * s.iconSize;
             PlaceMarkers(
-                f, a_world, toScreen, [&](float x, float y) { return x > f.mx0 && x < f.mx1 && y > f.my0 && y < f.my1 ? 1.0f : 0.0f; },
+                f, a_world, o.Scale(), toScreen, [&](float x, float y) { return x > f.mx0 && x < f.mx1 && y > f.my0 && y < f.my1 ? 1.0f : 0.0f; },
                 [&](P2 a_p) {
                     // pulled in along the line from the character (kept inside even when they are off the picture)
                     const float cx = std::clamp(f.px, f.mx0 + inset, f.mx1 - inset), cy = std::clamp(f.py, f.my0 + inset, f.my1 - inset);
@@ -960,6 +1089,7 @@ namespace MiniMap
 
         // ours opened over the map menu's world map (L there): closed by L it goes back to it, the map menu stays
         bool overWorld = false;
+        bool localHeld = false;  // ours opened from the game by its key held (the setting): closed when it is let go
         bool openAsked = false;  // shown, not up yet (the map menu's switch and the key may both ask in one frame)
 
         void OpenLocalMap(bool a_overWorld = false)
@@ -1024,7 +1154,8 @@ namespace MiniMap
                 const auto at = a_f.quests[a_f.hover].id;
                 a_f.hoverName = at < quests.size() ? quests[at].name : "";
             } else {
-                a_f.hoverName = RefName(a_f.icons[a_f.hover].id);
+                const auto& icon = a_f.icons[a_f.hover];
+                a_f.hoverName = icon.count > 1 ? std::format("{} ({})", Icons::Name(icon.kind), icon.count) : RefName(icon.id);  // a group: its kind and how many
             }
         }
 
@@ -1147,7 +1278,7 @@ namespace MiniMap
             }
             const float dt = std::clamp(std::chrono::duration<float>(now - local.last).count(), 0.0f, 0.1f);
             local.last = now;
-            pathNow = Pathing::Path(pathTarget);  // the one asked for on opening, once found
+            pathsNow = Pathing::Paths();  // the ones asked for on opening, once found
             float x0, y0, x1, y1;
             LocalRect(w, h, x0, y0, x1, y1);
             const float st = std::max(std::sin(s.minimapTilt * kDeg), 0.3f);
@@ -1246,7 +1377,7 @@ namespace MiniMap
                 quests.clear();
                 seen.clear();
                 Pathing::Clear();
-                pathNow.clear();
+                pathsNow.clear();
                 if (player) {
                     MapMesh::Update(player, 0.0f, s.enabled ? 0.0f : -1.0f);
                 }
@@ -1263,7 +1394,8 @@ namespace MiniMap
             const float reach = MinimapReach(inside);
             const float harvest = s.localMap && !inside ? std::max(reach, kLocalReach) : reach;
             // shown / hidden by its key: a fade; hidden through, nothing is done but the geometry for the local map
-            shown = std::clamp(shown + (s.visible ? dt : -dt) / kShowFade, 0.0f, 1.0f);
+            const bool want = s.toggleHold ? holdShown : s.visible;  // held to show, or switched
+            shown = std::clamp(shown + (want ? dt : -dt) / kShowFade, 0.0f, 1.0f);
             if (shown <= 0.0f) {
                 ClearFrame();
                 MapMesh::Update(player, dt, s.localMap ? harvest : 0.0f);
@@ -1329,9 +1461,9 @@ namespace MiniMap
 
         // the beam: along its way from the character to the quest target, a soft glow with a bright core and a light
         // running along it
-        void DrawBeam(Canvas& a_c, const Frame& a_f, float a_k, float a_alpha)
+        void DrawBeam(Canvas& a_c, const std::vector<P2>& a_pts, float a_k, float a_alpha)
         {
-            const auto& pts = a_f.beamPath;
+            const auto& pts = a_pts;
             // its length along the way, and where it starts (past the character's badge) and ends (short of the
             // target's icon)
             std::vector<float> at{ 0.0f };
@@ -1386,12 +1518,13 @@ namespace MiniMap
         {
             const auto& s = Settings::Map();
             const float a = a_f.alpha;
-            if (a_f.beam) {
-                DrawBeam(a_c, a_f, a_k, a);
+            for (const auto& beam : a_f.beams) {
+                DrawBeam(a_c, beam, a_k, a);
             }
             const float size = 16.0f * a_k * s.iconSize;
             for (const auto& i : a_f.icons) {
-                Icons::Draw(a_c, i.kind, i.x, i.y, size, i.alpha * a, i.shade);
+                const float grown = i.count > 1 ? std::min(1.0f + 0.18f * std::log2(static_cast<float>(i.count)), 1.6f) : 1.0f;  // a group: bigger the more
+                Icons::Draw(a_c, i.kind, i.x, i.y, size * grown, i.alpha * a, i.shade);
             }
             for (const auto& q : a_f.quests) {
                 Icons::Draw(a_c, q.kind, q.x, q.y, size * 1.15f, q.alpha * a, q.shade);
@@ -1433,7 +1566,9 @@ namespace MiniMap
             ImGuiCanvas canvas(a_dl);
             DrawMarkers(canvas, a_f, a_k);
             ImGui::ImDrawListManager::PopClipRect(a_dl);
-            if (vanilla) {
+            if (!Settings::Map().minimapFrame) {
+                // no frame: the picture's own edge only
+            } else if (vanilla) {
                 DrawVanillaFrame(a_dl, a_f.mx0, a_f.my0, a_f.mx1, a_f.my1, corner, a_f.round, a_k, a);
             } else if (a_f.round) {
                 ImGui::ImDrawListManager::AddCircle(a_dl, centre, rim, Faded(Rgb(150, 120, 75), a), 96, 1.5f * a_k);
@@ -1905,6 +2040,15 @@ namespace MiniMap
                             continue;
                         }
                     }
+                    // held to show: its key (or the gamepad's) let go hides it, whatever else is held then
+                    if (s.toggleHold && button->IsUp() && code != 0 && (code == s.toggleKey || code == s.toggleKeyPad)) {
+                        holdShown = false;
+                    }
+                    // the local map held open: its key let go closes it
+                    if (localHeld && button->IsUp() && code != 0 && (code == s.localMapKey || code == s.localMapKeyPad)) {
+                        localHeld = false;
+                        CloseLocalMenu(false);
+                    }
                     if (captureSlot || !s.enabled || code == 0 || !InGameplay()) {
                         continue;
                     }
@@ -1915,8 +2059,12 @@ namespace MiniMap
                     if (button->IsDown()) {
                         switch (*action) {
                         case Action::kToggle:
-                            s.visible = !s.visible;
-                            Settings::Save();
+                            if (s.toggleHold) {
+                                holdShown = true;  // shown while held
+                            } else {
+                                s.visible = !s.visible;
+                                Settings::Save();
+                            }
                             break;
                         case Action::kBeam:
                             s.questBeam = !s.questBeam;
@@ -1925,6 +2073,7 @@ namespace MiniMap
                         case Action::kLocalMap:
                             if (s.localMap) {
                                 OpenLocalMap();
+                                localHeld = s.localMapHold;  // held to look: let go, it closes
                             }
                             break;
                         case Action::kZoomIn:
@@ -2105,5 +2254,6 @@ namespace MiniMap
         std::scoped_lock lock(bodyLock);
         lookedInto.clear();
         lootCache.clear();
+        itemCache.clear();
     }
 }
