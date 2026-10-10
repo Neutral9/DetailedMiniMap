@@ -120,3 +120,7 @@ ShowInside = Tylko we wnętrzach
 ShowOutside = Tylko na zewnątrz
 LootHeight = Zakres wysokości łupów (wnętrza)
 AllHeights = Wszystkie piętra
+SeeUnderwater = Widok przez wodę podczas nurkowania
+RotateKey = Obracaj mapę lokalną (przytrzymaj)
+HintRotate = Obróć
+HintReset = Resetuj widok

@@ -120,3 +120,7 @@ ShowInside = Nur in Innenräumen
 ShowOutside = Nur draußen
 LootHeight = Beute-Höhenbereich (innen)
 AllHeights = Alle Stockwerke
+SeeUnderwater = Beim Tauchen durch das Wasser sehen
+RotateKey = Lokale Karte drehen (halten)
+HintRotate = Drehen
+HintReset = Ansicht zurücksetzen

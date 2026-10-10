@@ -113,6 +113,7 @@ namespace Menu
             if (m.localMap) {
                 KeyButton(Lang::T(S::LocalMapKey), m.localMapKey, m.localMapMod, m.localMapKeyPad, m.localMapModPad, "localmap");
                 Check(Lang::L(S::LocalMapHold).c_str(), m.localMapHold);
+                KeyButton(Lang::T(S::RotateKey), m.rotateKey, m.rotateMod, m.rotateKeyPad, m.rotateModPad, "rotate");
             }
             // the map only with an item in the inventory: its EditorID (or Plugin.esp|0x800) typed under the box
             Check(Lang::L(S::NeedItem).c_str(), m.needItem);
@@ -299,6 +300,9 @@ namespace Menu
                 Slider(S::RoadWidth, l.roadWidth, 1.0f, 3.0f, "%.2f");
             }
             Check(Lang::L(S::Water).c_str(), l.water);
+            if (l.water) {
+                Check(Lang::L(S::SeeUnderwater).c_str(), l.seeUnderwater);
+            }
             if (l.water && colour) {
                 Color(Lang::L(S::WaterColor).c_str(), l.waterColor);
             }

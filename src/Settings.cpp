@@ -218,6 +218,10 @@ namespace Settings
             a_f("Map", "LocalMapKeyPad", m.localMapKeyPad);
             a_f("Map", "LocalMapModPad", m.localMapModPad);
             a_f("Map", "LocalMapHold", m.localMapHold);
+            a_f("Map", "RotateKey", m.rotateKey);
+            a_f("Map", "RotateMod", m.rotateMod);
+            a_f("Map", "RotateKeyPad", m.rotateKeyPad);
+            a_f("Map", "RotateModPad", m.rotateModPad);
             a_f("Map", "NeedItem", m.needItem);
             a_f("Map", "NeedItemID", m.needItemId);
             a_f("Map", "ZoomInKey", m.zoomInKey);
@@ -245,6 +249,7 @@ namespace Settings
             a_f("MapLook", "Roads", l.roads);
             a_f("MapLook", "RoadWidth", l.roadWidth, 1.0f, 3.0f);
             a_f("MapLook", "Water", l.water);
+            a_f("MapLook", "SeeUnderwater", l.seeUnderwater);
             a_f("MapLook", "Style", l.style, 0, 1);
             a_f("MapLook", "IconStyle", l.iconStyle);
             a_f("MapLook", "FrameStyle", l.frameStyle);

@@ -120,3 +120,7 @@ ShowInside = Solo en interiores
 ShowOutside = Solo en exteriores
 LootHeight = Altura del botín (interiores)
 AllHeights = Todos los pisos
+SeeUnderwater = Ver a través del agua al bucear
+RotateKey = Girar el mapa local (mantener)
+HintRotate = Girar
+HintReset = Restablecer vista

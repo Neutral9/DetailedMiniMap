@@ -54,6 +54,11 @@ namespace Settings
         std::uint32_t localMapKeyPad = 0;     // ...and on the gamepad (both work; 0 = none)
         std::uint32_t localMapModPad = 0;
         bool          localMapHold = false;  // the local map open only while its key is held (else the key opens and closes it)
+        // the local map turned and tilted while this is held (the mouse, or the gamepad's left stick): 257 = the right mouse button
+        std::uint32_t rotateKey = 257;
+        std::uint32_t rotateMod = 0;
+        std::uint32_t rotateKeyPad = 0;      // ...and on the gamepad (both work; 0 = none)
+        std::uint32_t rotateModPad = 0;
         // the minimap and the local map only while the character carries an item (read with NeedItemId: the menu edits it)
         bool          needItem = false;
         std::string   needItemId;            // its EditorID, or "Plugin.esp|0x800" (its form id in that plugin)
@@ -88,6 +93,7 @@ namespace Settings
             float roadColor[3] = { 0.632f, 0.486f, 0.262f };
             float roadWidth = 1.0f;                           // 1 .. 3: 1 = as the navmesh has it, every step past 1 widens by 150 units a side
             bool  water = true;                               // lakes, rivers, the sea
+            bool  seeUnderwater = true;                       // the character under water: the water seen through (the bottom, wrecks, chests)
             float waterColor[3] = { 0.146f, 0.392f, 0.637f };
             int   style = 1;                                  // 0 = the colours above, 1 = vanilla (the game's local map: sepia, its frame)
             // the icons: a folder of Data/Textures/DetailedMiniMap/icons (every folder there is a style to pick)

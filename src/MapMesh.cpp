@@ -1549,6 +1549,7 @@ cbuffer C : register(b0)
     float4 roadBox;    // x widened by this many world units, w on
     float4 roadLook;   // rgb
     float4 water;      // rgb, a on
+    float4 under;      // x the water's level, y 0..1 the character under it (the water not drawn, what lies below its level tinted)
 };
 cbuffer K : register(b1)
 {
@@ -1603,6 +1604,16 @@ float Strokes(float u, float v, float pix, float px)
     float b = frac(lv);
     float wobble = sin(v / (s0 * 5.0)) * s0 * 0.12;
     return lerp(StrokeAt(u + wobble, s0, pix), StrokeAt(u + wobble, s0 * 2.0, pix), b);
+}
+
+// the character under water: what lies below the water's level tinted by it, evenly (the water's own meshes, one
+// over another in places, are not drawn then - they would add up unevenly)
+float3 Under(float3 col, float z, bool isWater, float3 tint)
+{
+    if (isWater || under.y <= 0.0 || z > under.x) {
+        return col;
+    }
+    return lerp(col, tint, 0.45 * under.y);
 }
 
 // water: wavy lines along the shore direction nobody knows - so along x, bent
@@ -1731,7 +1742,8 @@ float4 PS(VSOut i) : SV_Target
         if (isWater) {
             col = lerp(col, float3(0.17, 0.20, 0.21), 0.55);
         }
-        return float4(col, look.a * fade);
+        col = Under(col, w.z, isWater, float3(0.17, 0.20, 0.21));
+        return float4(col, look.a * fade * (isWater ? 1.0 - under.y : 1.0));
     }
     if (isWater) {
         col = water.rgb * (0.9 + 0.25 * WaterLines(w, pix));
@@ -1746,7 +1758,8 @@ float4 PS(VSOut i) : SV_Target
     col += occRim * float3(0.45, 0.65, 0.85);
     // below the character it gets darker with depth, above slightly lighter
     col *= depthMul;
-    return float4(col, look.a * fade);
+    col = Under(col, w.z, isWater, water.rgb);
+    return float4(col, look.a * fade * (isWater ? 1.0 - under.y : 1.0));  // water: gone from under it
 }
 )";
 
@@ -1764,6 +1777,7 @@ float4 PS(VSOut i) : SV_Target
             float roadBox[4];
             float roadLook[4];
             float water[4];
+            float under[4];
         };
         static_assert(sizeof(Constants) % 16 == 0);
 
@@ -2236,8 +2250,8 @@ float4 PS(VSOut i) : SV_Target
         // which meshes this picture draws: in range of the character, on the picture and, for objects, bigger than
         // a pixel
         const auto visible = [&](const CellMesh& a_m) {
-            if (a_m.space != a_view.space || (a_m.indices.empty() && !a_m.ib) || (a_m.kind == kWater && a_view.water[3] < 0.5f)) {
-                return false;  // another world space; no triangles (a cell's empty part 0); water off
+            if (a_m.space != a_view.space || (a_m.indices.empty() && !a_m.ib) || (a_m.kind == kWater && (a_view.water[3] < 0.5f || a_view.under[1] >= 0.99f))) {
+                return false;  // another world space; no triangles (a cell's empty part 0); water off (or the character under it)
             }
             const float nx = std::clamp(a_view.player.x, a_m.minX, a_m.maxX) - a_view.player.x;
             const float ny = std::clamp(a_view.player.y, a_m.minY, a_m.maxY) - a_view.player.y;
@@ -2269,7 +2283,7 @@ float4 PS(VSOut i) : SV_Target
             add(&a_view.rows[0][0], 16);
             const float values[]{ a_view.player.x, a_view.player.y, a_view.player.z, a_view.cut, a_view.range, a_view.fadeTime };
             add(values, std::size(values));
-            for (const auto* a : { a_view.ground, a_view.geometry, a_view.lines, a_view.shade, a_view.occluder, a_view.occluder2, a_view.roads, a_view.water }) {
+            for (const auto* a : { a_view.ground, a_view.geometry, a_view.lines, a_view.shade, a_view.occluder, a_view.occluder2, a_view.roads, a_view.water, a_view.under }) {
                 add(a, 4);
             }
             key.insert(key.end(), { static_cast<std::uint32_t>(a_view.width), static_cast<std::uint32_t>(a_view.height), a_view.space, r.roadUploaded });
@@ -2327,6 +2341,7 @@ float4 PS(VSOut i) : SV_Target
         c.roadBox[3] = roadsOn ? 1.0f : 0.0f;
         std::memcpy(c.roadLook, a_view.roads, sizeof(c.roadLook));
         std::memcpy(c.water, a_view.water, sizeof(c.water));
+        std::memcpy(c.under, a_view.under, sizeof(c.under));
         D3D11_MAPPED_SUBRESOURCE mapped{};
         if (SUCCEEDED(context->Map(r.cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
             std::memcpy(mapped.pData, &c, sizeof(c));

@@ -33,6 +33,7 @@ namespace MapMesh
         float        fadeTime = 0.8f;  // seconds a mesh new to the map takes to fade in
         float        roads[4]{};       // rgb, a: 0 no roads, 1 + world units they are widened by
         float        water[4]{};       // rgb, a = 1: water drawn
+        float        under[4]{};       // x the water's level, y 0..1 the character under water: the water fades away, what lies below its level is tinted
     };
     void* Render(const View& a_view);  // render thread: the picture as an ImTextureID, nullptr if not ready
 

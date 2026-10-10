@@ -622,6 +622,8 @@ namespace MiniMap
             float                     heading = 0.0f;  // the character's
             float                     yaw = 0.0f;      // the map's up (camera or north)
             bool                      inside = false;
+            float                     underwater = 0.0f;  // 1: the character's head under water (eased in and out)
+            float                     waterLevel = 0.0f;  // ...the surface it is under
             RE::FormID                space = 0;
             std::vector<Marker>       markers;
             std::vector<RE::NiPoint3> quests;
@@ -667,6 +669,15 @@ namespace MiniMap
             w.yaw = a_local ? 0.0f : CameraYaw(a_player);
             const auto cell = a_player->GetParentCell();
             w.inside = cell && cell->IsInteriorCell();
+            {
+                // the head under water (most of the height submerged): eased over a quarter of a second
+                static float dived = 0.0f;
+                const bool   under = Settings::Map().look.seeUnderwater && a_player->GetSubmergeLevel(a_player->GetPositionZ(), cell) >= 0.85f;
+                const float  step = a_local ? 1.0f : std::clamp(RE::GetSecondsSinceLastFrame(), 0.0f, 0.1f) / 0.25f;
+                dived = std::clamp(dived + (under ? step : -step), 0.0f, 1.0f);
+                w.underwater = dived;
+                w.waterLevel = a_player->GetWaterHeight();
+            }
             w.space = MapMesh::CurrentSpace();
             if (a_local) {
                 // the game paused: no fading, everything as it is
@@ -715,7 +726,9 @@ namespace MiniMap
                 const float st = std::sin(tilt), ct = std::cos(tilt);
                 const float R = halfH;
                 const float rows[3][3] = { { rx, ry, 0.0f }, { fx * st, fy * st, ct }, { fx * ct, fy * ct, -st } };
-                const float axis[3] = { height / (width * R), 1.0f / R, 1.0f / (8.0f * R) };  // the depth spans 8 R either way
+                // the depth: 4 R either way, never under 20000 units (zoomed in close a tall hill, a deep cave beyond the
+                // middle would fall out of it and vanish)
+                const float axis[3] = { height / (width * R), 1.0f / R, 1.0f / (2.0f * std::max(4.0f * R, 20000.0f)) };
                 for (int r = 0; r < 3; ++r) {
                     a_view.rows[r][0] = rows[r][0] * axis[r];
                     a_view.rows[r][1] = rows[r][1] * axis[r];
@@ -758,6 +771,8 @@ namespace MiniMap
             v.fadeTime = l.fadeTime;
             v.roads[3] = l.roads ? 1.0f + (l.roadWidth - 1.0f) * 150.0f : 0.0f;  // on; past 1: widened by that many world units
             v.water[3] = l.water ? 1.0f : 0.0f;
+            v.under[0] = a_world.waterLevel;
+            v.under[1] = l.water ? a_world.underwater : 0.0f;
             return v;
         }
 
@@ -1097,6 +1112,8 @@ namespace MiniMap
             bool         open = false;
             RE::NiPoint3 centre;
             float        range = 0.0f;  // world units from the centre to the top edge
+            float        yaw = 0.0f;    // turned (radians, 0: north up) and tilted (radians over the floor) - the rotate key held
+            float        tilt = 0.0f;
             float        lastX = 0.0f, lastY = 0.0f;  // the cursor last frame
             // the mouse's own movement to cursor pixels, per axis (sign and speed), learned while the cursor moves
             // freely: dragging goes by the mouse, not by the cursor (the menu holds or clamps it meanwhile)
@@ -1104,6 +1121,9 @@ namespace MiniMap
             std::chrono::steady_clock::time_point last;   // the last update (the game is paused: its clock stands)
         };
         Local local;
+        bool  turnHeld = false;   // main thread: the rotate key held (its modifier checked when used)
+        bool  viewReset = false;  // R on the local map: north up, the tilt as set
+        bool  Held(std::uint32_t a_code);  // below: a key held now
         float rawX = 0.0f, rawY = 0.0f;  // main thread: the mouse's movement since the last map update
         // keys moving the local map, held: W A S D and the arrows
         std::array<bool, 4> panKeys{};    // up, left, down, right
@@ -1202,13 +1222,13 @@ namespace MiniMap
             f.local = true;
             LocalRect(a_w, a_h, f.mx0, f.my0, f.mx1, f.my1);
             const float W = f.mx1 - f.mx0, H = f.my1 - f.my0;
-            const Ortho o{ local.centre, 0.0f, s.minimapTilt * kDeg, local.range, W, H };
+            const Ortho o{ local.centre, local.yaw, local.tilt, local.range, W, H };
             const auto  toScreen = [&](const RE::NiPoint3& a_p) {
                 const auto p = o.ToScreen(a_p);
                 return P2{ f.mx0 + p.first, f.my0 + p.second };
             };
             std::tie(f.px, f.py) = toScreen(a_world.player);
-            f.arrowAngle = a_world.heading;
+            f.arrowAngle = a_world.heading - local.yaw;  // relative to the map's up (turned)
             const float inset = 14.0f * k * s.iconSize;
             PlaceMarkers(
                 f, a_world, o.Scale(), toScreen, [&](float x, float y) { return x > f.mx0 && x < f.mx1 && y > f.my0 && y < f.my1 ? 1.0f : 0.0f; },
@@ -1495,6 +1515,9 @@ namespace MiniMap
                 local.open = true;
                 local.centre = player->GetPosition();
                 local.range = std::clamp(MinimapRange(inside) * 2.0f, 600.0f, 16000.0f);
+                local.yaw = 0.0f;
+                local.tilt = s.minimapTilt * kDeg;
+                turnHeld = viewReset = false;
                 local.lastX = cx;
                 local.lastY = cy;
                 local.last = now;
@@ -1515,7 +1538,16 @@ namespace MiniMap
             }
             float x0, y0, x1, y1;
             LocalRect(w, h, x0, y0, x1, y1);
-            const float st = std::max(std::sin(s.minimapTilt * kDeg), 0.3f);
+            if (viewReset) {
+                local.yaw = 0.0f;
+                local.tilt = s.minimapTilt * kDeg;
+                viewReset = false;
+            }
+            // how much the map's up on the screen goes along the ground (seen edge on: kept from nothing; from below: back)
+            const float sn = std::sin(local.tilt);
+            const float st = std::copysign(std::max(std::abs(sn), 0.3f), sn);
+            // the map's right and up on the ground (turned by its yaw)
+            const float rx = std::cos(local.yaw), ry = -std::sin(local.yaw), fx = std::sin(local.yaw), fy = std::cos(local.yaw);
             // a click on the legend shows / hides that kind of icon (and the press drags nothing)
             const auto legend = LegendOf(x1, y0, h / 1080.0f);
             if (mouseClicked && legend.In(cx, cy)) {
@@ -1536,8 +1568,9 @@ namespace MiniMap
                 const float after = (y1 - y0) * 0.5f / local.range;
                 if (cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1) {
                     const float ox = cx - (x0 + x1) * 0.5f, oy = cy - (y0 + y1) * 0.5f;
-                    local.centre.x += ox / before - ox / after;
-                    local.centre.y -= (oy / before - oy / after) / st;
+                    const float across = ox / before - ox / after, along = -(oy / before - oy / after) / st;
+                    local.centre.x += rx * across + fx * along;
+                    local.centre.y += ry * across + fy * along;
                 }
                 wheel = 0;
             }
@@ -1553,25 +1586,37 @@ namespace MiniMap
             };
             learn(local.gainX, cdx, rawX);
             learn(local.gainY, cdy, rawY);
+            // the rotate key held: the mouse (or the left stick) turns the map round its middle and tilts it, nothing moves
+            const bool turning = turnHeld && ((s.rotateKey != 0 && Held(s.rotateKey) && (s.rotateMod == 0 || Held(s.rotateMod))) ||
+                                                 (s.rotateKeyPad != 0 && Held(s.rotateKeyPad) && (s.rotateModPad == 0 || Held(s.rotateModPad))));
+            const auto stick = [](float a_v) { return std::abs(a_v) > 0.15f ? a_v : 0.0f; };
+            if (turning) {
+                local.yaw += rawX * local.gainX * 0.006f + stick(leftStick.first) * 2.5f * dt;
+                // turned and tilted any way, round and round (over the top, from below)
+                local.tilt = std::remainder(local.tilt - rawY * local.gainY * 0.005f + stick(leftStick.second) * 1.5f * dt, 2.0f * std::numbers::pi_v<float>);
+                local.yaw = std::remainder(local.yaw, 2.0f * std::numbers::pi_v<float>);
+            }
             // dragging moves the map with the mouse; the keys move it a screen's half a second
             float dx = 0.0f, dy = 0.0f;
-            if (mouseHeld && !legendHeld) {
+            if (mouseHeld && !legendHeld && !turning) {
                 dx += rawX * local.gainX;
                 dy += rawY * local.gainY;
             }
             const float keyStep = (y1 - y0) * 0.9f * dt;
             dx += (panKeys[1] ? keyStep : 0.0f) - (panKeys[3] ? keyStep : 0.0f);
             dy += (panKeys[0] ? keyStep : 0.0f) - (panKeys[2] ? keyStep : 0.0f);
-            // the gamepad: the left stick moves it, the right one zooms (up: in)
-            const auto stick = [](float a_v) { return std::abs(a_v) > 0.15f ? a_v : 0.0f; };
-            dx -= stick(leftStick.first) * keyStep * 1.2f;
-            dy += stick(leftStick.second) * keyStep * 1.2f;
+            // the gamepad: the left stick moves it (turns it, the rotate key held), the right one zooms (up: in)
+            if (!turning) {
+                dx -= stick(leftStick.first) * keyStep * 1.2f;
+                dy += stick(leftStick.second) * keyStep * 1.2f;
+            }
             if (const float zoom = stick(rightStick.second); zoom != 0.0f) {
                 local.range = std::clamp(local.range * std::pow(0.85f, zoom * 8.0f * dt), 300.0f, 20000.0f);
             }
             if (dx != 0.0f || dy != 0.0f) {
-                local.centre.x -= dx / scale;
-                local.centre.y += dy / (scale * st);
+                const float across = -dx / scale, along = dy / (scale * st);
+                local.centre.x += rx * across + fx * along;
+                local.centre.y += ry * across + fy * along;
                 // never farther from the character than the loaded world reaches
                 const auto  p = player->GetPosition();
                 const float reach = inside ? 20000.0f : kLocalReach;
@@ -1893,7 +1938,10 @@ namespace MiniMap
             if (!font) {
                 return;
             }
-            const auto  text = std::format("M  {}        Esc  {}", Lang::T(Lang::S::HintWorld), Lang::T(Lang::S::HintClose));
+            const auto& s = Settings::Map();
+            const auto  turn = s.rotateKey != 0 ? Settings::BindName(s.rotateKey, s.rotateMod) : s.rotateKeyPad != 0 ? Settings::BindName(s.rotateKeyPad, s.rotateModPad) : std::string();
+            const auto  text = turn.empty() ? std::format("M  {}        Esc  {}", Lang::T(Lang::S::HintWorld), Lang::T(Lang::S::HintClose)) :
+                                              std::format("M  {}        {}  {}        R  {}        Esc  {}", Lang::T(Lang::S::HintWorld), turn, Lang::T(Lang::S::HintRotate), Lang::T(Lang::S::HintReset), Lang::T(Lang::S::HintClose));
             const float base = ImGui::GetFontSize();
             const float size = 24.0f * a_k;
             const auto  ts = ImGui::CalcTextSize(text.c_str());
@@ -2246,6 +2294,13 @@ namespace MiniMap
                         if (const int pan = PanKey(button->GetIDCode()); pan >= 0) {
                             panKeys[pan] = local.open && button->IsPressed();
                         }
+                    }
+                    // the local map: its rotate key held turns it, R puts it back
+                    if (code != 0 && (code == s.rotateKey || code == s.rotateKeyPad)) {
+                        turnHeld = local.open && button->IsPressed();
+                    }
+                    if (local.open && code == 19 && button->IsDown() && !captureSlot) {
+                        viewReset = true;
                     }
                     if (code == kMouseBase) {
                         mouseHeld = button->IsPressed();

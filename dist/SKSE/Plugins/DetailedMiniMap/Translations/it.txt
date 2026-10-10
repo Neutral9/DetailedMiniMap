@@ -120,3 +120,7 @@ ShowInside = Solo al chiuso
 ShowOutside = Solo all'aperto
 LootHeight = Altezza del bottino (al chiuso)
 AllHeights = Tutti i piani
+SeeUnderwater = Vedere attraverso l'acqua in immersione
+RotateKey = Ruota la mappa locale (tieni premuto)
+HintRotate = Ruota
+HintReset = Ripristina vista

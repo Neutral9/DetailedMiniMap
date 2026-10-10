@@ -120,3 +120,7 @@ ShowInside = Only indoors
 ShowOutside = Only outdoors
 LootHeight = Loot height range (indoors)
 AllHeights = All floors
+SeeUnderwater = See through the water when diving
+RotateKey = Rotate the local map (hold)
+HintRotate = Rotate
+HintReset = Reset view

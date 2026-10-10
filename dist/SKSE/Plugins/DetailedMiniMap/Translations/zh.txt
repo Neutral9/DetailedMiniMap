@@ -120,3 +120,7 @@ ShowInside = 僅室內
 ShowOutside = 僅室外
 LootHeight = 戰利品高度範圍（室內）
 AllHeights = 所有樓層
+SeeUnderwater = 潛水時可看穿水面
+RotateKey = 旋轉區域地圖（按住）
+HintRotate = 旋轉
+HintReset = 重設視角

@@ -120,3 +120,7 @@ ShowInside = 屋内のみ
 ShowOutside = 屋外のみ
 LootHeight = 戦利品の高さ範囲（屋内）
 AllHeights = すべての階
+SeeUnderwater = 潜水中は水を透かして見る
+RotateKey = ローカルマップを回転（長押し）
+HintRotate = 回転
+HintReset = 視点をリセット

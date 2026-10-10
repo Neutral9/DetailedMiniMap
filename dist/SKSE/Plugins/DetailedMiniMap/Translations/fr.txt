@@ -120,3 +120,7 @@ ShowInside = Seulement à l'intérieur
 ShowOutside = Seulement à l'extérieur
 LootHeight = Hauteur du butin (intérieur)
 AllHeights = Tous les étages
+SeeUnderwater = Voir à travers l'eau en plongée
+RotateKey = Faire pivoter la carte locale (maintenir)
+HintRotate = Pivoter
+HintReset = Réinitialiser la vue

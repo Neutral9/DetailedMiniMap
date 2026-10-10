@@ -126,6 +126,10 @@ namespace Lang
         ShowOutside,
         LootHeight,
         AllHeights,
+        SeeUnderwater,
+        RotateKey,
+        HintRotate,
+        HintReset,
         kCount
     };
 
