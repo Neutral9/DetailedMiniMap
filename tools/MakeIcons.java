@@ -33,6 +33,8 @@ public class MakeIcons {
         new Icon("body", 0xF714, 175, 170, 160),
         new Icon("flora", 0xF06C, 120, 200, 90),
         new Icon("ore", 0xF3A5, 165, 180, 205),
+        new Icon("chest", 0xF552, 230, 175, 60),
+        new Icon("clutter", 0xE4CF, 150, 145, 135),
         new Icon("player", 0xF007, 255, 210, 90),  // the character (drawn upright; the map adds a pointer on its rim)
     };
     static final int S = 128;
@@ -64,7 +66,54 @@ public class MakeIcons {
                 }
                 System.out.println(out.resolve(icon.name + ".dds"));
             }
+            BufferedImage arrow = pointer(style.equals("Vanilla"));
+            writeDds(arrow, out.resolve("pointer.dds"));
+            if (a.length > 2) {
+                javax.imageio.ImageIO.write(arrow, "png", Paths.get(a[2], style, "pointer.png").toFile());
+            }
+            System.out.println(out.resolve("pointer.dds"));
         }
+    }
+
+    // the character's pointer: an arrowhead pointing up, turned by the map where the character faces. The texture's
+    // middle is the character; it reaches 2.1 badge radii either side (Icons.cpp kPointerSpan), the badge drawn over
+    // its middle - the tip stands out above it, the wings either side of it
+    static BufferedImage pointer(boolean vanilla) {
+        BufferedImage img = new BufferedImage(S, S, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = img.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
+        double c = S / 2.0, r = c / 2.1;   // the badge's radius in this texture (room left round the arrow for its shadow)
+        Path2D head = new Path2D.Double();
+        head.moveTo(c, c - r * 1.70);                // the tip
+        head.lineTo(c + r * 0.62, c - r * 0.92);     // the right wing (clear of the badge)
+        head.lineTo(c, c - r * 1.14);                // the notch
+        head.lineTo(c - r * 0.62, c - r * 0.92);     // the left wing
+        head.closePath();
+        BasicStroke edge = new BasicStroke(vanilla ? 9f : 7f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
+        // a soft shadow down right
+        Shape shadow = AffineTransform.getTranslateInstance(3, 4).createTransformedShape(head);
+        g.setColor(new Color(0, 0, 0, 90));
+        g.fill(edge.createStrokedShape(shadow));
+        g.fill(shadow);
+        // the outline, then the arrowhead lit from the top left
+        g.setColor(vanilla ? new Color(24, 20, 14, 240) : new Color(18, 13, 6, 245));
+        g.fill(edge.createStrokedShape(head));
+        Rectangle2D b = head.getBounds2D();
+        g.setPaint(vanilla ?
+            new GradientPaint((float) b.getMinX(), (float) b.getMinY(), new Color(248, 242, 226), (float) b.getMaxX(), (float) b.getMaxY(), new Color(196, 184, 156)) :
+            new GradientPaint((float) b.getMinX(), (float) b.getMinY(), new Color(255, 228, 130), (float) b.getMaxX(), (float) b.getMaxY(), new Color(205, 140, 36)));
+        g.fill(head);
+        // a ridge down its middle: the lit half and the shaded half of a faceted head
+        Path2D shade = new Path2D.Double();
+        shade.moveTo(c, c - r * 1.70);
+        shade.lineTo(c + r * 0.62, c - r * 0.92);
+        shade.lineTo(c, c - r * 1.14);
+        shade.closePath();
+        g.setColor(new Color(0, 0, 0, vanilla ? 40 : 55));
+        g.fill(shade);
+        g.dispose();
+        return img;
     }
 
     // the glyph centred optically: between the outline's box and its ink's centre of mass (a paw's heavy pad, a

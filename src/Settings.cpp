@@ -172,6 +172,7 @@ namespace Settings
         void Each(F&& a_f, MapSettings& m = map)
         {
             a_f("Map", "Enabled", m.enabled);
+            a_f("Map", "ShowWhere", m.showWhere, 0, 2);
             a_f("Map", "ToggleKey", m.toggleKey);
             a_f("Map", "ToggleMod", m.toggleMod);
             a_f("Map", "ToggleKeyPad", m.toggleKeyPad);
@@ -187,6 +188,7 @@ namespace Settings
             a_f("Map", "MinimapRound", m.minimapRound);
             a_f("Map", "MinimapCorner", m.minimapCorner, 0.0f, 150.0f);
             a_f("Map", "MinimapFrame", m.minimapFrame);
+            a_f("Map", "PointerCamera", m.pointerCamera);
             a_f("Map", "Anchor", m.anchor, 0, 3);
             a_f("Map", "OffsetX", m.offsetX, 0.0f, 2000.0f);
             a_f("Map", "OffsetY", m.offsetY, 0.0f, 2000.0f);
@@ -194,6 +196,7 @@ namespace Settings
             a_f("Map", "IconFadeIn", m.iconFadeIn, 0.0f, 3.0f);
             a_f("Map", "IconFadeOut", m.iconFadeOut, 0.0f, 3.0f);
             a_f("Map", "IconRange", m.iconRange, 0.0f, 20000.0f);
+            a_f("Map", "LootHeight", m.lootHeight, 0.0f, 2000.0f);
             a_f("Map", "MinimapOpacity", m.minimapOpacity, 0.1f, 1.0f);
             a_f("Map", "HideEmpty", m.hideEmpty);
             a_f("Map", "GroupIcons", m.groupIcons);
@@ -215,6 +218,8 @@ namespace Settings
             a_f("Map", "LocalMapKeyPad", m.localMapKeyPad);
             a_f("Map", "LocalMapModPad", m.localMapModPad);
             a_f("Map", "LocalMapHold", m.localMapHold);
+            a_f("Map", "NeedItem", m.needItem);
+            a_f("Map", "NeedItemID", m.needItemId);
             a_f("Map", "ZoomInKey", m.zoomInKey);
             a_f("Map", "ZoomInMod", m.zoomInMod);
             a_f("Map", "ZoomInKeyPad", m.zoomInKeyPad);
@@ -242,6 +247,9 @@ namespace Settings
             a_f("MapLook", "Water", l.water);
             a_f("MapLook", "Style", l.style, 0, 1);
             a_f("MapLook", "IconStyle", l.iconStyle);
+            a_f("MapLook", "FrameStyle", l.frameStyle);
+            a_f("MapLook", "FrameOpacity", l.frameOpacity, 0.0f, 1.0f);
+            a_f("MapLook", "IconOpacity", l.iconOpacity, 0.05f, 1.0f);
             static const std::string channels[] = { "R", "G", "B" };
             for (int i = 0; i < 3; ++i) {
                 const auto& c = channels[i];
@@ -264,10 +272,16 @@ namespace Settings
         ApplyLog();
     }
 
+    namespace
+    {
+        std::mutex textLock;  // the item's id: the menu writes it, the game reads it
+    }
+
     void Save()
     {
         static std::mutex lock;  // the menu and the keys both save: one at a time
         std::scoped_lock  guard(lock);
+        std::scoped_lock  text(textLock);
         Writer            writer;
         Each(writer);
         writer.Write();
@@ -290,18 +304,38 @@ namespace Settings
         auto       d = Defaults();
         d.language = map.language;
         d.look = map.look;
-        map = d;
+        {
+            std::scoped_lock text(textLock);
+            map = d;
+        }
+        Save();
+    }
+
+    std::string NeedItemId()
+    {
+        std::scoped_lock guard(textLock);
+        return map.needItemId;
+    }
+
+    void SetNeedItemId(std::string a_id)
+    {
+        {
+            std::scoped_lock guard(textLock);
+            map.needItemId = std::move(a_id);
+        }
         Save();
     }
 
     void ResetLook()
     {
-        // the map's style and the icons' stay (chosen, not tuned)
+        // the map's style, the icons' and the frame stay (chosen, not tuned)
         const int  style = map.look.style;
         const auto icons = map.look.iconStyle;
+        const auto frame = map.look.frameStyle;
         map.look = Defaults().look;
         map.look.style = style;
         map.look.iconStyle = icons;
+        map.look.frameStyle = frame;
         Save();
     }
 

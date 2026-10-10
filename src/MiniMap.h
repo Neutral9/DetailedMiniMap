@@ -16,4 +16,7 @@ namespace MiniMap
     bool OnFrameworkInput(RE::InputEvent* a_event);  // from SKSE Menu Framework; true = swallow the event
 
     void OnGameLoaded();  // a save loaded or a new game: the bodies looked into are forgotten (their ids mean others now)
+
+    // the menu: what the map's item id finds (its name), nothing when it finds nothing
+    std::optional<std::string> ItemName(std::string_view a_id);
 }

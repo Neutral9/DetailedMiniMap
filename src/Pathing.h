@@ -20,6 +20,7 @@ namespace Pathing
 
     // the last paths found, with the targets they were for
     std::vector<Found> Paths();
+    std::uint64_t      Version();  // changes with every new set of paths
 
     void Clear();  // another world space, the map off
 }

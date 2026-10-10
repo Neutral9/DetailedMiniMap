@@ -38,11 +38,14 @@ namespace Icons
             { "body", 0xF714, 175, 170, 160 },
             { "flora", 0xF06C, 120, 200, 90 },
             { "ore", 0xF3A5, 165, 180, 205 },
+            { "chest", 0xF552, 230, 175, 60 },
+            { "clutter", 0xE4CF, 150, 145, 135 },
         };
         static_assert(std::size(kStyles) == kCount);
 
         constexpr const char* kFolder = R"(Data\Textures\DetailedMiniMap\icons)";
         constexpr const char* kDefaultStyle = "Default";  // the badges: every picture there
+        constexpr float       kPointerSpan = 2.1f;       // pointer.dds reaches this many badge radii from the middle (tools/MakeIcons.java)
 
         constexpr ImGui::ImU32 Rgb(int r, int g, int b, int a)
         {
@@ -118,17 +121,41 @@ namespace Icons
         return kStyles[static_cast<std::size_t>(a_kind)].file;
     }
 
+    namespace
+    {
+        constexpr const char* kFrames = R"(Data\Textures\DetailedMiniMap\frames)";
+
+        std::vector<std::string> Folders(const char* a_dir)
+        {
+            std::vector<std::string> out;
+            std::error_code          error;
+            for (const auto& entry : std::filesystem::directory_iterator(a_dir, error)) {
+                if (entry.is_directory(error)) {
+                    out.push_back(entry.path().filename().string());
+                }
+            }
+            std::ranges::sort(out);
+            return out;
+        }
+    }
+
     std::vector<std::string> Styles()
     {
-        std::vector<std::string> out;
-        std::error_code          error;
-        for (const auto& entry : std::filesystem::directory_iterator(kFolder, error)) {
-            if (entry.is_directory(error)) {
-                out.push_back(entry.path().filename().string());
-            }
+        return Folders(kFolder);
+    }
+
+    std::vector<std::string> Frames()
+    {
+        return Folders(kFrames);
+    }
+
+    void* Frame(const std::string& a_style, bool a_round)
+    {
+        if (a_style.empty()) {
+            return nullptr;
         }
-        std::ranges::sort(out);
-        return out;
+        std::scoped_lock guard(lock);
+        return Load(std::format(R"({}\{}\{}.dds)", kFrames, a_style, a_round ? "round" : "square"));
     }
 
     void UseStyle(const std::string& a_style)
@@ -160,10 +187,17 @@ namespace Icons
         const auto                A = [&](int a_a) { return static_cast<int>(static_cast<float>(a_a) * std::clamp(a_alpha, 0.0f, 1.0f)); };
         const auto                tex = Texture("player");
         const float r = a_size * 0.5f;
-        // the pointer first, under the badge: a dark outline, then gold, its tip a bit past the rim
-        const auto at = [&](float a_a, float a_d) { return Canvas::V2{ a_x + std::sin(a_angle + a_a) * a_d, a_y - std::cos(a_angle + a_a) * a_d }; };
-        a_canvas.Triangle(at(0.0f, r * 1.62f), at(-0.62f, r * 0.80f), at(0.62f, r * 0.80f), Rgb(15, 12, 8, A(235)));
-        a_canvas.Triangle(at(0.0f, r * 1.45f), at(-0.52f, r * 0.85f), at(0.52f, r * 0.85f), Rgb(255, 210, 90, A(255)));
+        // the pointer first, under the badge, turned where the character faces: the style's pointer.dds (its square
+        // kPointerSpan badge radii either side of the middle, pointing up), else drawn - a dark outline, then gold
+        if (const auto pointer = Texture("pointer")) {
+            const float s = std::sin(a_angle), c = std::cos(a_angle), h = r * kPointerSpan;
+            const auto  turn = [&](float a_u, float a_v) { return Canvas::V2{ a_x + a_u * c - a_v * s, a_y + a_u * s + a_v * c }; };
+            a_canvas.ImageQuad(pointer, turn(-h, -h), turn(h, -h), turn(h, h), turn(-h, h), Rgb(255, 255, 255, A(255)));
+        } else {
+            const auto at = [&](float a_a, float a_d) { return Canvas::V2{ a_x + std::sin(a_angle + a_a) * a_d, a_y - std::cos(a_angle + a_a) * a_d }; };
+            a_canvas.Triangle(at(0.0f, r * 1.62f), at(-0.62f, r * 0.80f), at(0.62f, r * 0.80f), Rgb(15, 12, 8, A(235)));
+            a_canvas.Triangle(at(0.0f, r * 1.45f), at(-0.52f, r * 0.85f), at(0.52f, r * 0.85f), Rgb(255, 210, 90, A(255)));
+        }
         if (tex) {
             const float size = std::max(std::round(r) * 2.0f, 4.0f);
             const float x0 = std::round(a_x - size * 0.5f), y0 = std::round(a_y - size * 0.5f);

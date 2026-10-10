@@ -163,6 +163,48 @@ namespace MiniMap
         std::unordered_map<std::uint64_t, Seen> seen;
         float                                   iconClock = 0.0f;
 
+        // clutter: a misc item the game sells as clutter (VendorItemClutter: buckets, brooms, pots, plates, jugs), or
+        // one without it (mods' dishes often lack it) whose model is plainly tableware or a household thing
+        bool Clutter(RE::TESBoundObject* a_base)
+        {
+            static const auto keyword = [] {
+                const auto data = RE::TESDataHandler::GetSingleton();
+                return data ? data->LookupForm<RE::BGSKeyword>(0x0914E9, "Skyrim.esm") : nullptr;
+            }();
+            static std::unordered_map<RE::FormID, bool> known;
+            const auto misc = a_base->As<RE::TESObjectMISC>();
+            if (!misc) {
+                return false;
+            }
+            const auto [it, added] = known.try_emplace(a_base->GetFormID(), false);
+            if (added) {
+                static constexpr std::string_view kWords[] = { "plate", "bowl", "spoon", "fork", "ladle", "jug", "pitcher", "goblet", "tankard",
+                    "mug", "cup", "kettle", "bucket", "broom", "basket", "pot0", "ironpot", "claypot", "pan0", "fryingpan", "candlestick",
+                    "inkwell", "quill", "dish", "platter" };
+                std::string path = misc->GetModel() ? misc->GetModel() : "";
+                std::ranges::transform(path, path.begin(), [](unsigned char a_c) { return static_cast<char>(std::tolower(a_c)); });
+                const auto file = path.substr(path.find_last_of("\\/") + 1);  // the file's own name (folders say little)
+                it->second = (keyword && misc->HasKeyword(keyword)) ||
+                             std::ranges::any_of(kWords, [&](std::string_view a_w) { return file.contains(a_w); });
+            }
+            return it->second;
+        }
+
+        // a chest or a strongbox, by its model (chests of drawers aside): a container worth a look of its own
+        bool Chest(RE::TESBoundObject* a_base)
+        {
+            static std::unordered_map<RE::FormID, bool> known;
+            const auto [it, added] = known.try_emplace(a_base->GetFormID(), false);
+            if (added) {
+                if (const auto model = a_base->As<RE::TESModel>(); model && model->GetModel()) {
+                    std::string path = model->GetModel();
+                    std::ranges::transform(path, path.begin(), [](unsigned char a_c) { return static_cast<char>(std::tolower(a_c)); });
+                    it->second = (path.contains("chest") && !path.contains("drawer")) || path.contains("strongbox") || path.contains("lockbox");
+                }
+            }
+            return it->second;
+        }
+
         std::optional<Kind> ItemKind(RE::TESBoundObject* a_base)
         {
             switch (a_base->GetFormType()) {
@@ -174,6 +216,7 @@ namespace MiniMap
             case RE::FormType::Armor:
                 return a_base->GetPlayable() ? std::optional{ Kind::kArmor } : std::nullopt;
             case RE::FormType::Misc:
+                return Clutter(a_base) ? Kind::kClutter : Kind::kLoot;
             case RE::FormType::Book:
             case RE::FormType::Scroll:
             case RE::FormType::SoulGem:
@@ -326,7 +369,7 @@ namespace MiniMap
                     if (merchants.contains(a_ref->GetFormID()) || (Settings::Map().hideEmpty && !HasLoot(a_ref, base))) {
                         return RE::BSContainer::ForEachResult::kContinue;
                     }
-                    statics.push_back({ a_ref->GetPosition(), Kind::kContainer, a_ref->GetFormID() });
+                    statics.push_back({ a_ref->GetPosition(), Chest(base) ? Kind::kChest : Kind::kContainer, a_ref->GetFormID() });
                 } else if (base->Is(RE::FormType::Flora) || base->Is(RE::FormType::Tree)) {
                     if (Pickable(a_ref, base)) {
                         statics.push_back({ a_ref->GetPosition(), Kind::kFlora, a_ref->GetFormID() });
@@ -337,7 +380,9 @@ namespace MiniMap
                     }
                 } else if (a_ref->Is3DLoaded()) {
                     if (const auto kind = ItemKind(base)) {
-                        statics.push_back({ a_ref->GetPosition(), *kind, a_ref->GetFormID() });
+                        // a quest's item is never clutter, whatever it looks like
+                        const auto as = *kind == Kind::kClutter && a_ref->extraList.HasQuestObjectAlias() ? Kind::kLoot : *kind;
+                        statics.push_back({ a_ref->GetPosition(), as, a_ref->GetFormID() });
                     }
                 }
                 return RE::BSContainer::ForEachResult::kContinue;
@@ -394,17 +439,39 @@ namespace MiniMap
             }
         }
 
+        // what is left off by the icons' distance and (inside) by the loot's height: things to take on another storey
+        void Narrow(std::vector<Marker>& a_markers, const RE::NiPoint3& a_at, bool a_inside)
+        {
+            const auto& s = Settings::Map();
+            const auto  loot = [](Kind a_kind) {
+                switch (a_kind) {
+                case Kind::kEnemy:
+                case Kind::kGuard:
+                case Kind::kNpc:
+                case Kind::kFollower:
+                case Kind::kCreature:
+                case Kind::kDoor:
+                case Kind::kQuest:
+                    return false;
+                default:
+                    return true;
+                }
+            };
+            std::erase_if(a_markers, [&](const Marker& a_m) {
+                return (s.iconRange > 0.0f && a_m.pos.GetDistance(a_at) > s.iconRange) ||
+                       (a_inside && s.lootHeight > 0.0f && loot(a_m.kind) && std::abs(a_m.pos.z - a_at.z) > s.lootHeight);
+            });
+        }
+
         // statics + the characters, fading in and out
         std::vector<Marker> Markers(RE::PlayerCharacter* a_player)
         {
             auto out = statics;
             Characters(a_player, markerRange, out);
             const auto& s = Settings::Map();
-            // only what is near enough, when the icons' distance is set (it fades out past it)
-            if (s.iconRange > 0.0f) {
-                const auto at = a_player->GetPosition();
-                std::erase_if(out, [&](const Marker& a_m) { return a_m.pos.GetDistance(at) > s.iconRange; });
-            }
+            // only what is near enough, when the icons' distance is set (it fades out past it); inside, on this storey
+            const auto cell = a_player->GetParentCell();
+            Narrow(out, a_player->GetPosition(), cell && cell->IsInteriorCell());
             // fade in what turned up; what is gone stays a moment longer, fading out
             const auto  step = [](float a_fade, float a_dt) { return a_fade > 0.0f ? a_dt / a_fade : 1.0f; };
             const auto  key = [](const Marker& a_m) { return (static_cast<std::uint64_t>(a_m.id) << 8) | static_cast<std::uint64_t>(a_m.kind); };
@@ -446,6 +513,8 @@ namespace MiniMap
             RE::FormID          quest = 0;
             bool                active = false;  // set active in the journal (the compass shows it)
             float               beyond = 0.0f;   // a target past doors: the way on from the door here to it (straight, world units)
+            RE::NiPoint3        goal;            // where its way on the navmesh goes: the target, or before a door the spot one comes in by it
+            bool                door = false;    // a door on the way (goal stays)
         };
         std::vector<QuestPoint> quests;  // main thread: gathered with the statics
 
@@ -469,6 +538,21 @@ namespace MiniMap
                 return tele->teleportData->position;
             }
             return a_link.teleportLocation;
+        }
+
+        // the spot in front of a door, on its floor: where the game puts one coming in by it (its other side's teleport);
+        // the door itself stands in the wall - under it in plan may be the floor of another storey
+        RE::NiPoint3 ApproachOf(RE::TESObjectREFR* a_door)
+        {
+            const auto pos = a_door->GetPosition();
+            if (const auto tele = a_door->extraList.GetByType<RE::ExtraTeleport>(); tele && tele->teleportData) {
+                if (const auto other = tele->teleportData->linkedDoor.get()) {
+                    if (const auto back = other->extraList.GetByType<RE::ExtraTeleport>(); back && back->teleportData && back->teleportData->position.GetDistance(pos) < 600.0f) {
+                        return back->teleportData->position;
+                    }
+                }
+            }
+            return pos;
         }
 
         void GatherQuests(RE::PlayerCharacter* a_player)
@@ -517,10 +601,18 @@ namespace MiniMap
                     }
                 }
                 if (at) {
-                    quests.push_back({ at->CreateRefHandle(), at->GetPosition(), quest->GetFullName() ? quest->GetFullName() : "", quest->GetFormID(), quest->IsActive(), beyond });
+                    const bool door = at != held.get();
+                    quests.push_back({ at->CreateRefHandle(), at->GetPosition(), quest->GetFullName() ? quest->GetFullName() : "", quest->GetFormID(), quest->IsActive(), beyond,
+                        door ? ApproachOf(at) : at->GetPosition(), door });
                 }
             }
         }
+
+        struct Beam
+        {
+            RE::NiPoint3 target;  // where it ends (the target, or the door towards it)
+            RE::NiPoint3 goal;    // where its walking path is searched to (QuestPoint::goal)
+        };
 
         // ---- what a map picture needs from the game, taken on the main thread
         struct World
@@ -533,15 +625,15 @@ namespace MiniMap
             RE::FormID                space = 0;
             std::vector<Marker>       markers;
             std::vector<RE::NiPoint3> quests;
-            std::vector<RE::NiPoint3> beams;  // where the beams go
+            std::vector<Beam>         beams;  // where the beams go
         };
 
         // the beams' targets: one a quest set active in the journal, to its nearest target; or (the setting) one beam
         // only, to the nearest target of any quest. Nearest by the whole way: to where it is shown here (the target, or
         // the door towards it) and on past the doors to the target itself - a door close by to a far place is far
-        std::vector<RE::NiPoint3> BeamTargets(const RE::NiPoint3& a_player)
+        std::vector<Beam> BeamTargets(const RE::NiPoint3& a_player)
         {
-            std::vector<RE::NiPoint3> out;
+            std::vector<Beam> out;
             if (!Settings::Map().questBeam) {
                 return out;
             }
@@ -561,7 +653,7 @@ namespace MiniMap
                 }
             }
             for (const auto& [quest, q] : nearest) {
-                out.push_back(q->pos);
+                out.push_back({ q->pos, q->goal });
             }
             return out;
         }
@@ -571,7 +663,7 @@ namespace MiniMap
             World w;
             w.player = a_player->GetPosition();
             w.tall = a_player->GetHeight() > 1.0f ? a_player->GetHeight() : 128.0f;
-            w.heading = a_player->GetAngleZ();
+            w.heading = Settings::Map().pointerCamera ? CameraYaw(a_player) : a_player->GetAngleZ();  // where the camera looks, or where the body faces
             w.yaw = a_local ? 0.0f : CameraYaw(a_player);
             const auto cell = a_player->GetParentCell();
             w.inside = cell && cell->IsInteriorCell();
@@ -580,15 +672,16 @@ namespace MiniMap
                 // the game paused: no fading, everything as it is
                 w.markers = statics;
                 Characters(a_player, markerRange, w.markers);
-                if (const float range = Settings::Map().iconRange; range > 0.0f) {
-                    std::erase_if(w.markers, [&](const Marker& a_m) { return a_m.pos.GetDistance(w.player) > range; });
-                }
+                Narrow(w.markers, w.player, w.inside);
             } else {
                 w.markers = Markers(a_player);
             }
             for (auto& q : quests) {
                 if (const auto ref = q.ref.get()) {
                     q.pos = ref->GetPosition();
+                    if (!q.door) {
+                        q.goal = q.pos;
+                    }
                 }
                 w.quests.push_back(q.pos);
             }
@@ -715,27 +808,31 @@ namespace MiniMap
         std::vector<Pathing::Found> pathsNow;  // the last paths found, with their targets
         float                       sincePath = 1.0f;
 
-        float ToSegment2D(const RE::NiPoint3& a_p, const RE::NiPoint3& a_a, const RE::NiPoint3& a_b)
+        // how far a point is from a leg of a path: across (x, y), and what it is over or under the leg there past a
+        // step's height counted twice (a leg on another storey right overhead is not the one the character is on)
+        float ToSegment(const RE::NiPoint3& a_p, const RE::NiPoint3& a_a, const RE::NiPoint3& a_b)
         {
             const float dx = a_b.x - a_a.x, dy = a_b.y - a_a.y, len = dx * dx + dy * dy;
             const float t = len > 0.0f ? std::clamp(((a_p.x - a_a.x) * dx + (a_p.y - a_a.y) * dy) / len, 0.0f, 1.0f) : 0.0f;
             const float x = a_a.x + dx * t - a_p.x, y = a_a.y + dy * t - a_p.y;
-            return std::sqrt(x * x + y * y);
+            const float dz = std::max(std::abs(a_a.z + (a_b.z - a_a.z) * t - a_p.z) - 100.0f, 0.0f) * 2.0f;
+            return std::sqrt(x * x + y * y) + dz;
         }
 
         // a way from where the character is now: the rest of a_path from its leg nearest to the character (among the
-        // first a_legs), then straight on to the target where the way came short of it; none: the character left it
-        std::optional<std::vector<RE::NiPoint3>> Along(const RE::NiPoint3& a_player, const std::vector<RE::NiPoint3>& a_path, std::size_t a_legs, const RE::NiPoint3& a_target)
+        // first a_legs), then straight on to the target where the way came short of it; none: the character left it (no
+        // leg within a_off)
+        std::optional<std::vector<RE::NiPoint3>> Along(const RE::NiPoint3& a_player, const std::vector<RE::NiPoint3>& a_path, std::size_t a_legs, const RE::NiPoint3& a_target, float a_off = 400.0f)
         {
             std::size_t leg = 0;
             float       best = FLT_MAX;
             for (std::size_t i = 0; i + 1 < a_path.size() && i < a_legs; ++i) {
-                if (const float d = ToSegment2D(a_player, a_path[i], a_path[i + 1]); d < best) {
+                if (const float d = ToSegment(a_player, a_path[i], a_path[i + 1]); d < best) {
                     best = d;
                     leg = i;
                 }
             }
-            if (best >= 400.0f) {
+            if (best >= a_off) {
                 return std::nullopt;
             }
             std::vector<RE::NiPoint3> out{ a_player };
@@ -746,18 +843,57 @@ namespace MiniMap
             return out;
         }
 
-        std::vector<RE::NiPoint3> BeamWay(const RE::NiPoint3& a_player, const RE::NiPoint3& a_target)
+        std::vector<RE::NiPoint3> BeamWay(const RE::NiPoint3& a_player, const Beam& a_beam)
         {
             for (const auto& [target, path] : pathsNow) {
-                if (path.size() < 2 || target.GetDistance(a_target) >= 200.0f) {
+                if (path.size() < 2 || target.GetDistance(a_beam.goal) >= 200.0f) {
                     continue;
                 }
-                if (auto way = Along(a_player, path, 8, a_target)) {
+                if (auto way = Along(a_player, path, 8, a_beam.target)) {
                     return std::move(*way);
                 }
-                break;
+                // the character left it (a new one is on its way): still along it from its nearest leg - straight to the
+                // target would cut through the walls
+                return std::move(*Along(a_player, path, path.size(), a_beam.target, FLT_MAX));
             }
-            return { a_player, a_target };
+            return { a_player, a_beam.target };
+        }
+
+        float Length(const std::vector<RE::NiPoint3>& a_way)
+        {
+            float out = 0.0f;
+            for (std::size_t i = 1; i < a_way.size(); ++i) {
+                out += a_way[i - 1].GetDistance(a_way[i]);
+            }
+            return out;
+        }
+
+        // new paths taken in; a beam keeps the way it took while that still runs by the character and is not clearly
+        // longer than the new one (at a fork of two near-equal ways it does not flip with every step)
+        std::uint64_t pathsVersion = 0;
+
+        void TakePaths(const RE::NiPoint3& a_player)
+        {
+            const auto version = Pathing::Version();
+            if (version == pathsVersion) {
+                return;
+            }
+            pathsVersion = version;
+            auto fresh = Pathing::Paths();
+            for (auto& f : fresh) {
+                for (const auto& old : pathsNow) {
+                    if (f.path.size() < 2 || old.path.size() < 2 || old.target.GetDistance(f.target) >= 200.0f) {
+                        continue;
+                    }
+                    const auto was = Along(a_player, old.path, 8, f.target);
+                    const auto now = Along(a_player, f.path, 8, f.target);
+                    if (was && now && Length(*was) <= Length(*now) * 1.15f + 150.0f) {
+                        f.path = old.path;
+                    }
+                    break;
+                }
+            }
+            pathsNow = std::move(fresh);
         }
 
         // main thread: the navmeshes kept up to date and new paths asked for twice a second
@@ -770,9 +906,13 @@ namespace MiniMap
             if (sincePath >= 0.5f || a_now) {
                 sincePath = 0.0f;
                 Pathing::Update(a_player);
-                Pathing::Request(a_player->GetPosition(), BeamTargets(a_player->GetPosition()));
+                std::vector<RE::NiPoint3> goals;
+                for (const auto& beam : BeamTargets(a_player->GetPosition())) {
+                    goals.push_back(beam.goal);
+                }
+                Pathing::Request(a_player->GetPosition(), goals);
             }
-            pathsNow = Pathing::Paths();
+            TakePaths(a_player->GetPosition());
         }
 
         void ClearFrame()
@@ -845,8 +985,8 @@ namespace MiniMap
                 }
             }
             // the beams: along their ways, on the screen, ending where they leave the picture
-            for (const auto& target : a_world.beams) {
-                const auto      way = BeamWay(a_world.player, target);
+            for (const auto& beam : a_world.beams) {
+                const auto      way = BeamWay(a_world.player, beam);
                 std::vector<P2> line;
                 P2              prev = a_toScreen(way[0]);
                 const bool      clip = a_inside(prev.first, prev.second) > 0.0f;  // the character off the picture: the picture's own clip does
@@ -881,8 +1021,10 @@ namespace MiniMap
             f.has = true;
             // in its corner of the screen, this far from the edges (kept on the screen)
             const bool right = (s.anchor & 1) != 0, bottom = (s.anchor & 2) != 0;
-            f.mx0 = std::clamp(right ? a_w - s.offsetX * k - size : s.offsetX * k, 0.0f, std::max(a_w - size, 0.0f));
-            f.my0 = std::clamp(bottom ? a_h - s.offsetY * k - size : s.offsetY * k, 0.0f, std::max(a_h - size, 0.0f));
+            // a frame's picture reaches past the picture: room left for it on the screen
+            const float band = s.minimapFrame && !s.look.frameStyle.empty() ? size * (1.0f / Icons::kFrameHole - 1.0f) * 0.5f : 0.0f;
+            f.mx0 = std::clamp(right ? a_w - s.offsetX * k - size - band : s.offsetX * k + band, band, std::max(a_w - size - band, band));
+            f.my0 = std::clamp(bottom ? a_h - s.offsetY * k - size - band : s.offsetY * k + band, band, std::max(a_h - size - band, band));
             f.mx1 = f.mx0 + size;
             f.my1 = f.my0 + size;
             f.px = (f.mx0 + f.mx1) * 0.5f;
@@ -893,6 +1035,8 @@ namespace MiniMap
             const float margin = 12.0f * k;
             const float cx = f.px, cy = f.py, rim = size * 0.5f;
             f.round = s.minimapRound;
+            // the square's corners as rounded as they are drawn (DrawMinimap): a frame's picture's, or as set
+            const float corner = !f.round && s.minimapFrame && !s.look.frameStyle.empty() ? rim * Icons::kFrameCorner : std::clamp(s.minimapCorner * k, 0.0f, rim);
             PlaceMarkers(
                 f, a_world, o.Scale(),
                 [&](const RE::NiPoint3& a_p) {
@@ -904,6 +1048,12 @@ namespace MiniMap
                         // round: the icons fade out over the last few px before the rim instead of being cut by it
                         const float d = std::sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy));
                         return std::clamp((rim - 4.0f * k - d) / (10.0f * k), 0.0f, 1.0f);
+                    }
+                    // a rounded corner: inside its arc only, fading out before it as the round map does (the picture's
+                    // clip is a plain rectangle: an icon in the corner showed past the rounding)
+                    const float ix = std::abs(x - cx) - (rim - corner), iy = std::abs(y - cy) - (rim - corner);
+                    if (corner > 0.5f && ix > 0.0f && iy > 0.0f) {
+                        return std::clamp((corner - 4.0f * k - std::sqrt(ix * ix + iy * iy)) / (10.0f * k), 0.0f, 1.0f);
                     }
                     return x > f.mx0 - margin && x < f.mx1 + margin && y > f.my0 - margin && y < f.my1 + margin ? 1.0f : 0.0f;
                 },
@@ -917,6 +1067,20 @@ namespace MiniMap
                     } else {
                         const float half = rim - inset;
                         t = std::min({ 1.0f, std::abs(dx) > half ? half / std::abs(dx) : 1.0f, std::abs(dy) > half ? half / std::abs(dy) : 1.0f });
+                        // into a rounded corner: further in along the same line, onto its arc
+                        const float round = std::max(corner - inset, 0.0f);
+                        const auto  outside = [&](float a_t) {
+                            const float ix = std::abs(dx * a_t) - (half - round), iy = std::abs(dy * a_t) - (half - round);
+                            return ix > 0.0f && iy > 0.0f && ix * ix + iy * iy > round * round;
+                        };
+                        if (corner > 0.5f && outside(t)) {
+                            float lo = 0.0f, hi = t;
+                            for (int i = 0; i < 14; ++i) {
+                                const float mid = (lo + hi) * 0.5f;
+                                (outside(mid) ? hi : lo) = mid;
+                            }
+                            t = lo;
+                        }
                     }
                     return P2{ cx + dx * t, cy + dy * t };
                 });
@@ -1075,6 +1239,74 @@ namespace MiniMap
             return f;
         }
 
+        // the map only with an item carried (the setting): the item found by its id when that changes, the inventory looked
+        // into once a second. An id that finds nothing does not lock the map away (the menu says it is not found)
+        std::string Trim(std::string_view a_s)
+        {
+            const auto first = a_s.find_first_not_of(" \t\r\n");
+            const auto last = a_s.find_last_not_of(" \t\r\n");
+            return first == std::string_view::npos ? std::string() : std::string(a_s.substr(first, last - first + 1));
+        }
+
+        RE::TESBoundObject* FindItem(std::string_view a_id)
+        {
+            RE::TESForm* form = nullptr;
+            if (const auto bar = a_id.find('|'); bar != std::string_view::npos) {
+                // "Plugin.esp|0x800": the form id within that plugin
+                const auto  plugin = Trim(a_id.substr(0, bar));
+                const auto  number = Trim(a_id.substr(bar + 1));
+                RE::FormID  id = 0;
+                const char* first = number.data() + (number.starts_with("0x") || number.starts_with("0X") ? 2 : 0);
+                const auto  dh = RE::TESDataHandler::GetSingleton();
+                const auto  file = dh ? dh->LookupModByName(plugin) : nullptr;
+                if (file && std::from_chars(first, number.data() + number.size(), id, 16).ec == std::errc{}) {
+                    form = dh->LookupForm(id & (file->IsLight() ? 0xFFF : 0xFFFFFF), plugin);
+                }
+            } else if (!a_id.empty()) {
+                form = RE::TESForm::LookupByEditorID(a_id);
+            }
+            return form ? form->As<RE::TESBoundObject>() : nullptr;
+        }
+
+        std::string         itemFor;  // the id the item was looked up by
+        RE::TESBoundObject* item = nullptr;
+        bool                carried = true;
+        std::chrono::steady_clock::time_point itemNext{};  // the inventory looked into again then
+
+        // the map may be used now: the setting off, or the item carried (main thread)
+        bool Allowed()
+        {
+            const auto& s = Settings::Map();
+            if (!s.needItem) {
+                itemFor.clear();
+                item = nullptr;
+                carried = true;
+                itemNext = {};
+                return true;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (now < itemNext) {
+                return carried;
+            }
+            itemNext = now + std::chrono::seconds(1);
+            if (auto id = Trim(Settings::NeedItemId()); id != itemFor) {
+                itemFor = std::move(id);
+                item = FindItem(itemFor);
+                if (!item && !itemFor.empty()) {
+                    logger::warn("the item the map needs ('{}') is not found: the map stays available", itemFor);
+                }
+            }
+            const auto player = RE::PlayerCharacter::GetSingleton();
+            if (!item || !player) {
+                carried = true;
+                return carried;
+            }
+            const auto counts = player->GetInventoryCounts([](RE::TESBoundObject& a_obj) { return &a_obj == item; });
+            const auto it = counts.find(item);
+            carried = it != counts.end() && it->second > 0;
+            return carried;
+        }
+
         bool vanillaHidden = false;  // the game's local map clip hidden by us
 
         // our local map is a menu of its own (it pauses the game, the game's cursor over it): opened by its key from the
@@ -1195,7 +1427,7 @@ namespace MiniMap
         {
             const auto& s = Settings::Map();
             const auto  data = a_menu ? a_menu->GetRuntimeData() : nullptr;
-            const bool  ours = s.enabled && s.localMap;
+            const bool  ours = s.enabled && s.localMap && Allowed();  // without the item the map needs: the game's own
             const bool  showing = ours && data && data->localMapMenu.GetRuntimeData().showingMap;
             // the game's own local map not shown at all while ours replaces it (back when ours is switched off)
             if (data) {
@@ -1278,7 +1510,9 @@ namespace MiniMap
             }
             const float dt = std::clamp(std::chrono::duration<float>(now - local.last).count(), 0.0f, 0.1f);
             local.last = now;
-            pathsNow = Pathing::Paths();  // the ones asked for on opening, once found
+            if (player) {
+                TakePaths(player->GetPosition());  // the ones asked for on opening, once found
+            }
             float x0, y0, x1, y1;
             LocalRect(w, h, x0, y0, x1, y1);
             const float st = std::max(std::sin(s.minimapTilt * kDeg), 0.3f);
@@ -1394,11 +1628,13 @@ namespace MiniMap
             const float reach = MinimapReach(inside);
             const float harvest = s.localMap && !inside ? std::max(reach, kLocalReach) : reach;
             // shown / hidden by its key: a fade; hidden through, nothing is done but the geometry for the local map
-            const bool want = s.toggleHold ? holdShown : s.visible;  // held to show, or switched
+            const bool allowed = Allowed();  // the item the map needs carried (or none needed)
+            const bool where = s.showWhere == 0 || (s.showWhere == 1) == inside;  // shown everywhere, or only inside / outside
+            const bool want = allowed && where && (s.toggleHold ? holdShown : s.visible);  // held to show, or switched
             shown = std::clamp(shown + (want ? dt : -dt) / kShowFade, 0.0f, 1.0f);
             if (shown <= 0.0f) {
                 ClearFrame();
-                MapMesh::Update(player, dt, s.localMap ? harvest : 0.0f);
+                MapMesh::Update(player, dt, s.localMap && allowed ? harvest : 0.0f);
                 return;
             }
             markerRange = reach;
@@ -1522,12 +1758,13 @@ namespace MiniMap
                 DrawBeam(a_c, beam, a_k, a);
             }
             const float size = 16.0f * a_k * s.iconSize;
+            const float icons = a * s.look.iconOpacity;  // the icons as opaque as set (the character's and the one under the cursor in full)
             for (const auto& i : a_f.icons) {
                 const float grown = i.count > 1 ? std::min(1.0f + 0.18f * std::log2(static_cast<float>(i.count)), 1.6f) : 1.0f;  // a group: bigger the more
-                Icons::Draw(a_c, i.kind, i.x, i.y, size * grown, i.alpha * a, i.shade);
+                Icons::Draw(a_c, i.kind, i.x, i.y, size * grown, i.alpha * icons, i.shade);
             }
             for (const auto& q : a_f.quests) {
-                Icons::Draw(a_c, q.kind, q.x, q.y, size * 1.15f, q.alpha * a, q.shade);
+                Icons::Draw(a_c, q.kind, q.x, q.y, size * 1.15f, q.alpha * icons, q.shade);
             }
             Icons::DrawPlayer(a_c, a_f.px, a_f.py, 18.0f * a_k * s.iconSize, a_f.arrowAngle, a);
             // the one under the cursor: larger, on top, at full light
@@ -1544,8 +1781,10 @@ namespace MiniMap
             const bool  vanilla = Settings::Map().look.style == 1;
             const V2    centre{ (a_f.mx0 + a_f.mx1) * 0.5f, (a_f.my0 + a_f.my1) * 0.5f };
             const float rim = (a_f.mx1 - a_f.mx0) * 0.5f;
-            // the square's corners: rounded as set (never past a circle)
-            const float corner = a_f.round ? rim : std::clamp(Settings::Map().minimapCorner * a_k, 0.0f, rim);
+            // the square's corners: rounded as set (never past a circle); with a frame's picture as round as its hole's
+            // (nothing showing between the two)
+            const auto  framed = Settings::Map().minimapFrame ? Icons::Frame(Settings::Map().look.frameStyle, a_f.round) : nullptr;
+            const float corner = a_f.round ? rim : framed ? rim * Icons::kFrameCorner : std::clamp(Settings::Map().minimapCorner * a_k, 0.0f, rim);
             const float a = a_f.alpha;
             const auto  background = Faded(vanilla ? Rgb(16, 15, 13, 200) : Rgb(8, 10, 16, 175), a);
             if (a_f.round) {
@@ -1566,14 +1805,19 @@ namespace MiniMap
             ImGuiCanvas canvas(a_dl);
             DrawMarkers(canvas, a_f, a_k);
             ImGui::ImDrawListManager::PopClipRect(a_dl);
-            if (!Settings::Map().minimapFrame) {
+            const float fa = a * Settings::Map().look.frameOpacity;  // the frame as opaque as set
+            if (!Settings::Map().minimapFrame || fa <= 0.0f) {
                 // no frame: the picture's own edge only
+            } else if (framed) {
+                // a frame's picture: its hole over ours, the band round it
+                const float half = rim / Icons::kFrameHole;
+                ImGui::ImDrawListManager::AddImage(a_dl, framed, V2{ centre.x - half, centre.y - half }, V2{ centre.x + half, centre.y + half }, V2{ 0.0f, 0.0f }, V2{ 1.0f, 1.0f }, Faded(Rgb(255, 255, 255), fa));
             } else if (vanilla) {
-                DrawVanillaFrame(a_dl, a_f.mx0, a_f.my0, a_f.mx1, a_f.my1, corner, a_f.round, a_k, a);
+                DrawVanillaFrame(a_dl, a_f.mx0, a_f.my0, a_f.mx1, a_f.my1, corner, a_f.round, a_k, fa);
             } else if (a_f.round) {
-                ImGui::ImDrawListManager::AddCircle(a_dl, centre, rim, Faded(Rgb(150, 120, 75), a), 96, 1.5f * a_k);
+                ImGui::ImDrawListManager::AddCircle(a_dl, centre, rim, Faded(Rgb(150, 120, 75), fa), 96, 1.5f * a_k);
             } else {
-                ImGui::ImDrawListManager::AddRect(a_dl, V2{ a_f.mx0, a_f.my0 }, V2{ a_f.mx1, a_f.my1 }, Faded(Rgb(150, 120, 75), a), corner, 0, 1.5f * a_k);
+                ImGui::ImDrawListManager::AddRect(a_dl, V2{ a_f.mx0, a_f.my0 }, V2{ a_f.mx1, a_f.my1 }, Faded(Rgb(150, 120, 75), fa), corner, 0, 1.5f * a_k);
             }
         }
 
@@ -2034,7 +2278,7 @@ namespace MiniMap
                         continue;
                     }
                     // its key on the map menu's world map: ours over it
-                    if (!captureSlot && code != 0 && button->IsDown() && s.enabled && s.localMap && ActionOf(code) == Action::kLocalMap) {
+                    if (!captureSlot && code != 0 && button->IsDown() && s.enabled && s.localMap && Allowed() && ActionOf(code) == Action::kLocalMap) {
                         if (const auto ui = RE::UI::GetSingleton(); ui && ui->IsMenuOpen(RE::MapMenu::MENU_NAME)) {
                             OpenLocalMap(true);
                             continue;
@@ -2071,7 +2315,7 @@ namespace MiniMap
                             Settings::Save();
                             break;
                         case Action::kLocalMap:
-                            if (s.localMap) {
+                            if (s.localMap && Allowed()) {
                                 OpenLocalMap();
                                 localHeld = s.localMapHold;  // held to look: let go, it closes
                             }
@@ -2255,5 +2499,15 @@ namespace MiniMap
         lookedInto.clear();
         lootCache.clear();
         itemCache.clear();
+    }
+
+    std::optional<std::string> ItemName(std::string_view a_id)
+    {
+        const auto found = FindItem(Trim(a_id));
+        if (!found) {
+            return std::nullopt;
+        }
+        const char* name = found->GetName();
+        return name && *name ? std::string(name) : std::format("{:08X}", found->GetFormID());
     }
 }

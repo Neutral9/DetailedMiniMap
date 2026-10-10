@@ -19,6 +19,8 @@ struct Canvas
     virtual void Disc(V2 a_centre, float a_radius, Color a_color) = 0;
     virtual void Ring(V2 a_centre, float a_radius, Color a_color, float a_width) = 0;
     virtual void Triangle(V2 a_a, V2 a_b, V2 a_c, Color a_color) = 0;
+    // the texture on any four corners (turned): a_p0 its top left, then clockwise
+    virtual void ImageQuad(void* a_texture, V2 a_p0, V2 a_p1, V2 a_p2, V2 a_p3, Color a_tint) = 0;
     // a Font Awesome glyph centred on a_centre; false: this canvas has no font
     virtual bool Glyph(unsigned int, V2, float, Color) { return false; }
 };
@@ -42,6 +44,7 @@ public:
     void Disc(V2 a_centre, float a_radius, Color a_color) override;
     void Ring(V2 a_centre, float a_radius, Color a_color, float a_width) override;
     void Triangle(V2 a_a, V2 a_b, V2 a_c, Color a_color) override;
+    void ImageQuad(void* a_texture, V2 a_p0, V2 a_p1, V2 a_p2, V2 a_p3, Color a_tint) override;
     bool Glyph(unsigned int a_glyph, V2 a_centre, float a_size, Color a_color) override;
 
     ImGuiMCP::ImDrawList* list;

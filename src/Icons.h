@@ -26,6 +26,8 @@ namespace Icons
         kBody,      // a dead body not looked into yet
         kFlora,     // a plant to pick (not picked yet)
         kOre,       // an ore vein not mined out
+        kChest,     // a chest, a strongbox (a container of its own, apart from barrels, sacks, wardrobes)
+        kClutter,   // an item of no worth: a bucket, a broom, a pot (the game's VendorItemClutter)
         kTotal
     };
     inline constexpr std::size_t kCount = static_cast<std::size_t>(Kind::kTotal);
@@ -37,6 +39,13 @@ namespace Icons
     // style; a picture it lacks comes from Default)
     std::vector<std::string> Styles();
     void                     UseStyle(const std::string& a_style);
+
+    // the minimap's frames: every folder of Data/Textures/DetailedMiniMap/frames, each a round.dds and a square.dds
+    // (made by tools/MakeFrames.java) - the picture fills the hole in the middle, kFrameHole of the texture's size
+    inline constexpr float   kFrameHole = 0.80f;
+    inline constexpr float   kFrameCorner = 0.18f;  // the square hole's corners, of its half size
+    std::vector<std::string> Frames();
+    void*                    Frame(const std::string& a_style, bool a_round);  // nullptr: no such picture (the drawn frame instead)
 
     // a_size: the badge's diameter in px
     void Draw(Canvas& a_canvas, Kind a_kind, float a_x, float a_y, float a_size, float a_alpha = 1.0f, float a_shade = 1.0f);  // a_shade: 1 as it is, less darker

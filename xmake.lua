@@ -34,6 +34,14 @@ target("DetailedMiniMap")
 
     -- the default ini goes next to the dll; the menu saves into DetailedMiniMap_User.ini
     add_installfiles("dist/(SKSE/**)")
+    -- MeshFilter.json is the user's to edit: kept apart in dist/defaults, put in place only when there is none yet
+    -- (an install never writes over one)
+    after_install(function (target)
+        local dest = path.join(target:installdir(), "SKSE/Plugins/DetailedMiniMap/MeshFilter.json")
+        if not os.isfile(dest) then
+            os.cp("dist/defaults/MeshFilter.json", dest)
+        end
+    end)
     -- the map icons (tools/MakeIcons.java), replaceable
     add_installfiles("dist/(Textures/**)")
 

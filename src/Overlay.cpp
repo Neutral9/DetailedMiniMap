@@ -86,6 +86,13 @@ namespace Overlay
         out.insert(out.end(), { Vertex{ a_a.x, a_a.y, 0.0f, 0.0f, a_color, 1.0f }, Vertex{ a_b.x, a_b.y, 0.0f, 0.0f, a_color, 1.0f }, Vertex{ a_c.x, a_c.y, 0.0f, 0.0f, a_color, 1.0f } });
     }
 
+    void Sprites::ImageQuad(void* a_texture, V2 a_p0, V2 a_p1, V2 a_p2, V2 a_p3, Color a_tint)
+    {
+        if (a_texture) {
+            Quad(a_texture, a_p0, a_p1, a_p2, a_p3, 0.0f, 0.0f, 1.0f, 1.0f, a_tint, 0.0f);
+        }
+    }
+
     // ---- the renderer
     namespace
     {

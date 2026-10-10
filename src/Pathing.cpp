@@ -130,12 +130,52 @@ namespace Pathing
             return best;
         }
 
+        // the height of a triangle's plane over a point (x, y) of it
+        float PlaneZ(const Graph& a_g, const Graph::Tri& a_t, const RE::NiPoint3& a_p)
+        {
+            const auto& a = a_g.verts[a_t.v[0]];
+            const auto& b = a_g.verts[a_t.v[1]];
+            const auto& c = a_g.verts[a_t.v[2]];
+            const float d = Area2(a, b, c);
+            if (std::abs(d) < 1e-3f) {
+                return a_t.c.z;
+            }
+            const float wa = Area2(b, c, a_p) / d, wb = Area2(c, a, a_p) / d;
+            return a.z * wa + b.z * wb + c.z * (1.0f - wa - wb);
+        }
+
+        // how far a point is from a floor height: under it a floor is what the point stands on (a little leeway for
+        // the navmesh lying over or under the ground), over it a floor is another storey - counted three times as far
+        float Storey(float a_floor, float a_z)
+        {
+            const float up = a_floor - a_z;
+            return up > 48.0f ? up * 3.0f : std::abs(up);
+        }
+
+        // how far a point is from a triangle across (x, y): 0 over it, else to its nearest edge
+        float Across(const Graph& a_g, const Graph::Tri& a_t, const RE::NiPoint3& a_p)
+        {
+            if (Inside(a_g, a_t, a_p)) {
+                return 0.0f;
+            }
+            float best = FLT_MAX;
+            for (int k = 0; k < 3; ++k) {
+                const auto& a = a_g.verts[a_t.v[k]];
+                const auto& b = a_g.verts[a_t.v[(k + 1) % 3]];
+                const float dx = b.x - a.x, dy = b.y - a.y, len = dx * dx + dy * dy;
+                const float t = len > 0.0f ? std::clamp(((a_p.x - a.x) * dx + (a_p.y - a.y) * dy) / len, 0.0f, 1.0f) : 0.0f;
+                const float x = a.x + dx * t - a_p.x, y = a.y + dy * t - a_p.y;
+                best = std::min(best, x * x + y * y);
+            }
+            return std::sqrt(best);
+        }
+
         std::int32_t Find(const Graph& a_g, const RE::NiPoint3& a_p, float a_reach)
         {
             const auto   gx = static_cast<std::int32_t>(std::floor(a_p.x / Graph::kGrid)), gy = static_cast<std::int32_t>(std::floor(a_p.y / Graph::kGrid));
             const int    ring = static_cast<int>(std::ceil(a_reach / Graph::kGrid));
             std::int32_t on = -1, closest = -1;
-            float        onDz = 400.0f, closestD = a_reach * a_reach;
+            float        onDz = 200.0f, closestD = a_reach * a_reach;
             for (int dx = -ring; dx <= ring; ++dx) {
                 for (int dy = -ring; dy <= ring; ++dy) {
                     const auto it = a_g.grid.find(Graph::Key(gx + dx, gy + dy));
@@ -144,12 +184,19 @@ namespace Pathing
                     }
                     for (const auto i : it->second) {
                         const auto& t = a_g.tris[i];
-                        const float dz = std::abs(t.c.z - a_p.z);
-                        if (std::abs(dx) <= 1 && std::abs(dy) <= 1 && dz < onDz && Inside(a_g, t, a_p)) {
-                            on = static_cast<std::int32_t>(i);
-                            onDz = dz;
+                        // the triangle the point is over, the storey it stands on: by the plane's height there
+                        if (std::abs(dx) <= 1 && std::abs(dy) <= 1 && Inside(a_g, t, a_p)) {
+                            if (const float dz = Storey(PlaneZ(a_g, t, a_p), a_p.z); dz < onDz) {
+                                on = static_cast<std::int32_t>(i);
+                                onDz = dz;
+                            }
                         }
-                        const float d = (t.c.x - a_p.x) * (t.c.x - a_p.x) + (t.c.y - a_p.y) * (t.c.y - a_p.y) + dz * dz;
+                        // else the nearest by its edge (by the centre a big triangle past a wall may come nearer than the
+                        // floor by the wall one stands at - the navmesh keeps off walls), the height weighing more (a door
+                        // in a wall: the floor in front of it, not the storey over or under it)
+                        const float dz = Storey(t.c.z, a_p.z) * 2.0f;
+                        const float across = Across(a_g, t, a_p);
+                        const float d = across * across + dz * dz;
                         if (d < closestD) {
                             closestD = d;
                             closest = static_cast<std::int32_t>(i);
@@ -283,6 +330,7 @@ namespace Pathing
         std::vector<RE::NiPoint3> jobTo;
         std::vector<Found>        result;
         std::uint64_t             generation = 0;  // Clear() bumps it: a search under way is thrown away
+        std::uint64_t             version = 0;     // bumped by every new result
 
         void Work()
         {
@@ -331,6 +379,7 @@ namespace Pathing
                 std::scoped_lock guard(lock);
                 if (gen == generation) {
                     result = std::move(paths);
+                    ++version;
                 }
             }
         }
@@ -419,6 +468,12 @@ namespace Pathing
     {
         std::scoped_lock guard(lock);
         return result;
+    }
+
+    std::uint64_t Version()
+    {
+        std::scoped_lock guard(lock);
+        return version;
     }
 
     void Clear()

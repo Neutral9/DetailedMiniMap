@@ -66,3 +66,9 @@ bool ImGuiCanvas::Glyph(unsigned int a_glyph, V2 a_centre, float a_size, Color a
     FontAwesome::Pop();
     return drawn;
 }
+
+void ImGuiCanvas::ImageQuad(void* a_texture, V2 a_p0, V2 a_p1, V2 a_p2, V2 a_p3, Color a_tint)
+{
+    D::AddImageQuad(list, reinterpret_cast<ImGui::ImTextureID>(a_texture), Im(a_p0), Im(a_p1), Im(a_p2), Im(a_p3), ImGui::ImVec2{ 0.0f, 0.0f }, ImGui::ImVec2{ 1.0f, 0.0f },
+        ImGui::ImVec2{ 1.0f, 1.0f }, ImGui::ImVec2{ 0.0f, 1.0f }, a_tint);
+}

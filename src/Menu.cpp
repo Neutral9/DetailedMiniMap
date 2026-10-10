@@ -101,12 +101,48 @@ namespace Menu
                 }
             }
             Check(Lang::L(S::Enabled).c_str(), m.enabled);
+            {
+                const char* places[] = { Lang::T(S::ShowEverywhere), Lang::T(S::ShowInside), Lang::T(S::ShowOutside) };
+                if (ImGui::Combo(Lang::L(S::ShowWhere).c_str(), &m.showWhere, places, 3)) {
+                    Settings::Save();
+                }
+            }
             KeyButton(Lang::T(S::ToggleKey), m.toggleKey, m.toggleMod, m.toggleKeyPad, m.toggleModPad, "toggle");
             Check(Lang::L(S::ToggleHold).c_str(), m.toggleHold);
             Check(Lang::L(S::LocalMap).c_str(), m.localMap);
             if (m.localMap) {
                 KeyButton(Lang::T(S::LocalMapKey), m.localMapKey, m.localMapMod, m.localMapKeyPad, m.localMapModPad, "localmap");
                 Check(Lang::L(S::LocalMapHold).c_str(), m.localMapHold);
+            }
+            // the map only with an item in the inventory: its EditorID (or Plugin.esp|0x800) typed under the box
+            Check(Lang::L(S::NeedItem).c_str(), m.needItem);
+            {
+                static char        text[256] = {};
+                static bool        editing = false;
+                static std::string lookedFor = "\n";  // what the line under it was found for (nothing yet)
+                static std::optional<std::string> found;
+                if (!editing) {  // as saved (a reset changes it too)
+                    const auto id = Settings::NeedItemId();
+                    strncpy_s(text, id.c_str(), _TRUNCATE);
+                }
+                ImGui::BeginDisabled(!m.needItem);
+                ImGui::SetNextItemWidth(360.0f);
+                if (ImGui::InputText(Lang::L(S::NeedItemId).c_str(), text, sizeof(text))) {
+                    Settings::SetNeedItemId(text);
+                }
+                editing = ImGui::IsItemActive();
+                if (m.needItem && *text) {
+                    if (lookedFor != text) {
+                        lookedFor = text;
+                        found = MiniMap::ItemName(lookedFor);
+                    }
+                    if (found) {
+                        ImGui::TextColored(ImGui::ImVec4{ 0.45f, 0.85f, 0.45f, 1.0f }, "%s %s", Lang::T(S::ItemFound), found->c_str());
+                    } else {
+                        ImGui::TextColored(ImGui::ImVec4{ 0.95f, 0.45f, 0.35f, 1.0f }, "%s", Lang::T(S::ItemNotFound));
+                    }
+                }
+                ImGui::EndDisabled();
             }
 
             ImGui::SeparatorText(Lang::T(S::SecMinimap));
@@ -123,6 +159,7 @@ namespace Menu
             }
             Check(Lang::L(S::NorthUp).c_str(), m.northUp);
             Check(Lang::L(S::MinimapFrame).c_str(), m.minimapFrame);
+            Check(Lang::L(S::PointerCamera).c_str(), m.pointerCamera);
             Slider(S::Size, m.minimapSize, 100.0f, 600.0f, "%.0f");
             Slider(S::RangeOutside, m.minimapRange, 300.0f, 12000.0f, "%.0f", true);
             Slider(S::RangeInside, m.minimapRangeInside, 300.0f, 12000.0f, "%.0f", true);
@@ -146,6 +183,7 @@ namespace Menu
             Slider(S::IconFadeIn, m.iconFadeIn, 0.0f, 3.0f, m.iconFadeIn > 0.0f ? "%.2f" : Lang::T(S::AtOnce));
             Slider(S::IconFadeOut, m.iconFadeOut, 0.0f, 3.0f, m.iconFadeOut > 0.0f ? "%.2f" : Lang::T(S::AtOnce));
             Slider(S::IconRange, m.iconRange, 0.0f, 20000.0f, m.iconRange > 0.0f ? "%.0f" : Lang::T(S::Everywhere));
+            Slider(S::LootHeight, m.lootHeight, 0.0f, 1000.0f, m.lootHeight > 0.0f ? "%.0f" : Lang::T(S::AllHeights));
             Check(Lang::L(S::HideEmpty).c_str(), m.hideEmpty);
             Check(Lang::L(S::GroupIcons).c_str(), m.groupIcons);
             for (std::size_t i = 0; i < m.show.size(); ++i) {
@@ -205,6 +243,29 @@ namespace Menu
                     ImGui::EndCombo();
                 }
             }
+            {
+                // the minimap's frames: the drawn one (the style's), or a folder of pictures (found when the list opens)
+                static std::vector<std::string> found;
+                const char*                     drawn = Lang::T(S::FrameDrawn);
+                if (ImGui::BeginCombo(Lang::L(S::FrameStyle).c_str(), l.frameStyle.empty() ? drawn : l.frameStyle.c_str())) {
+                    if (found.empty() || ImGui::IsWindowAppearing()) {
+                        found = Icons::Frames();
+                    }
+                    if (ImGui::Selectable(drawn, l.frameStyle.empty())) {
+                        l.frameStyle.clear();
+                        Settings::Save();
+                    }
+                    for (const auto& name : found) {
+                        if (ImGui::Selectable(name.c_str(), name == l.frameStyle)) {
+                            l.frameStyle = name;
+                            Settings::Save();
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+            }
+            Slider(S::FrameOpacity, l.frameOpacity, 0.0f, 1.0f, "%.2f");
+            Slider(S::IconOpacity, l.iconOpacity, 0.05f, 1.0f, "%.2f");
             const bool colour = l.style == 0;  // the vanilla style has its own palette: no colours to set
             ImGui::SeparatorText(Lang::T(S::SecGround));
             if (colour) {

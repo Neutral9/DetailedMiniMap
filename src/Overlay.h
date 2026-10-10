@@ -31,6 +31,7 @@ namespace Overlay
         void Disc(V2 a_centre, float a_radius, Color a_color) override;
         void Ring(V2 a_centre, float a_radius, Color a_color, float a_width) override;
         void Triangle(V2 a_a, V2 a_b, V2 a_c, Color a_color) override;
+        void ImageQuad(void* a_texture, V2 a_p0, V2 a_p1, V2 a_p2, V2 a_p3, Color a_tint) override;
 
         std::vector<Batch> batches;
 

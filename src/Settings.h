@@ -6,6 +6,7 @@ namespace Settings
     struct MapSettings
     {
         bool          enabled = true;
+        int           showWhere = 0;         // the minimap shown 0 everywhere, 1 only inside (caves, houses), 2 only outside
         // the keys: a key code (keyboard scan code; 256 + mouse button, 264 / 265 the wheel up / down; 266 + gamepad button,
         // as SKSE counts them) and a key that must be held with it (0 = none)
         std::uint32_t toggleKey = 49;        // DirectInput scan code (49 = N): the minimap shown / hidden, fading (0 = none)
@@ -23,6 +24,7 @@ namespace Settings
         bool          minimapRound = true;   // a round minimap instead of the square
         float         minimapCorner = 40.0f; // the square minimap: its corners rounded this far (px at 1080p; 0 = sharp)
         bool          minimapFrame = true;   // its frame (the vanilla style's or the ring) drawn
+        bool          pointerCamera = false; // the character's pointer shows where the camera looks (else where the body faces)
         int           anchor = 1;            // the screen corner the minimap sits in: 0 top left, 1 top right, 2 bottom left, 3 bottom right
         float         offsetX = 18.0f;       // ...this far from that corner (px at 1080p)
         float         offsetY = 18.0f;
@@ -31,10 +33,11 @@ namespace Settings
         float         iconFadeIn = 0.35f;    // seconds an icon takes to show up
         float         iconFadeOut = 0.35f;   // ...and to go once its thing is gone (picked up, dead, out of range)
         float         iconRange = 0.0f;      // icons only for things this close to the character (world units; 0 = as far as the map shows; quests always)
+        float         lootHeight = 0.0f;     // inside: things to take (not characters, doors, quests) only this far over or under the feet (world units; 0 = all) - another storey's loot left off
         float         minimapOpacity = 1.0f; // the whole minimap (picture, frame, icons) this opaque
         bool          hideEmpty = true;      // containers with nothing to take left off
         bool          groupIcons = true;     // icons of one kind overlapping on the map merged into one
-        std::array<bool, 16> show{ true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true };  // per icon kind (Icons::Kind order); the menu toggles them
+        std::array<bool, 18> show{ true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, false };  // per icon kind (Icons::Kind order); the menu toggles them
         bool          cut = true;            // cut away what is over the character (roofs, ceilings)
         float         cutHeight = 80.0f;     // inside: geometry this far over the feet is cut away (roofs, ceilings)
         // quests
@@ -51,6 +54,9 @@ namespace Settings
         std::uint32_t localMapKeyPad = 0;     // ...and on the gamepad (both work; 0 = none)
         std::uint32_t localMapModPad = 0;
         bool          localMapHold = false;  // the local map open only while its key is held (else the key opens and closes it)
+        // the minimap and the local map only while the character carries an item (read with NeedItemId: the menu edits it)
+        bool          needItem = false;
+        std::string   needItemId;            // its EditorID, or "Plugin.esp|0x800" (its form id in that plugin)
         // the minimap's range (outside or inside, where the character is) zoomed in and out: Shift + the wheel
         std::uint32_t zoomInKey = 264;
         std::uint32_t zoomInMod = 42;
@@ -86,6 +92,10 @@ namespace Settings
             int   style = 1;                                  // 0 = the colours above, 1 = vanilla (the game's local map: sepia, its frame)
             // the icons: a folder of Data/Textures/DetailedMiniMap/icons (every folder there is a style to pick)
             std::string iconStyle = "Vanilla";
+            // the minimap's frame: a folder of Data/Textures/DetailedMiniMap/frames, or empty: the drawn one (the style's)
+            std::string frameStyle;
+            float       frameOpacity = 1.0f;  // the minimap's frame this opaque (the picture, the vanilla one or the ring)
+            float       iconOpacity = 1.0f;   // the icons (not the character's) this opaque
         } look;
     };
 
@@ -95,6 +105,10 @@ namespace Settings
     void Save();
     void ResetMap();   // the map page to the defaults (DetailedMiniMap.ini, else the built-in ones); the language stays
     void ResetLook();  // the look page to the defaults; the style stays
+
+    // the item the map needs: copies, as the menu edits it while the game reads it
+    std::string NeedItemId();
+    void        SetNeedItemId(std::string a_id);
 
     std::string KeyName(std::uint32_t a_key);                       // for the menu
     std::string BindName(std::uint32_t a_key, std::uint32_t a_mod);  // "Left Shift + Wheel Up"

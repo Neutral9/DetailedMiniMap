@@ -76,6 +76,8 @@ namespace Lang
         Bodies,
         Plants,
         Ores,
+        TreasureChests,
+        Clutter,
         // added later
         SecPosition,
         Anchor,
@@ -109,6 +111,21 @@ namespace Lang
         HideEmpty,
         GroupIcons,
         LocalMapHold,
+        FrameStyle,
+        FrameDrawn,
+        PointerCamera,
+        FrameOpacity,
+        IconOpacity,
+        NeedItem,
+        NeedItemId,
+        ItemFound,
+        ItemNotFound,
+        ShowWhere,
+        ShowEverywhere,
+        ShowInside,
+        ShowOutside,
+        LootHeight,
+        AllHeights,
         kCount
     };
 
