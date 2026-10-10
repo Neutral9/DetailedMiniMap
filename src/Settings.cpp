@@ -222,6 +222,9 @@ namespace Settings
             a_f("Map", "RotateMod", m.rotateMod);
             a_f("Map", "RotateKeyPad", m.rotateKeyPad);
             a_f("Map", "RotateModPad", m.rotateModPad);
+            a_f("Map", "RotateInvertX", m.rotateInvertX);
+            a_f("Map", "RotateInvertY", m.rotateInvertY);
+            a_f("Map", "RotateSpeed", m.rotateSpeed, 0.2f, 3.0f);
             a_f("Map", "NeedItem", m.needItem);
             a_f("Map", "NeedItemID", m.needItemId);
             a_f("Map", "ZoomInKey", m.zoomInKey);
@@ -255,6 +258,9 @@ namespace Settings
             a_f("MapLook", "FrameStyle", l.frameStyle);
             a_f("MapLook", "FrameOpacity", l.frameOpacity, 0.0f, 1.0f);
             a_f("MapLook", "IconOpacity", l.iconOpacity, 0.05f, 1.0f);
+            a_f("MapLook", "BeamWidth", l.beamWidth, 0.5f, 3.0f);
+            a_f("MapLook", "BeamOpacity", l.beamOpacity, 0.0f, 1.0f);
+            a_f("MapLook", "BeamLights", l.beamLights);
             static const std::string channels[] = { "R", "G", "B" };
             for (int i = 0; i < 3; ++i) {
                 const auto& c = channels[i];
@@ -262,6 +268,8 @@ namespace Settings
                 a_f("MapLook", ("Geometry" + c).c_str(), l.geometryColor[i], 0.0f, 1.0f);
                 a_f("MapLook", ("Road" + c).c_str(), l.roadColor[i], 0.0f, 1.0f);
                 a_f("MapLook", ("Water" + c).c_str(), l.waterColor[i], 0.0f, 1.0f);
+                a_f("MapLook", ("Frame" + c).c_str(), l.frameColor[i], 0.0f, 1.0f);
+                a_f("MapLook", ("Beam" + c).c_str(), l.beamColor[i], 0.0f, 1.0f);
             }
         }
     }

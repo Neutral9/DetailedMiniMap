@@ -59,6 +59,9 @@ namespace Settings
         std::uint32_t rotateMod = 0;
         std::uint32_t rotateKeyPad = 0;      // ...and on the gamepad (both work; 0 = none)
         std::uint32_t rotateModPad = 0;
+        bool          rotateInvertX = false;  // the turn the other way round (left / right)
+        bool          rotateInvertY = false;  // the tilt the other way round (up / down)
+        float         rotateSpeed = 1.0f;     // how fast it turns (0.2 .. 3)
         // the minimap and the local map only while the character carries an item (read with NeedItemId: the menu edits it)
         bool          needItem = false;
         std::string   needItemId;            // its EditorID, or "Plugin.esp|0x800" (its form id in that plugin)
@@ -102,6 +105,11 @@ namespace Settings
             std::string frameStyle;
             float       frameOpacity = 1.0f;  // the minimap's frame this opaque (the picture, the vanilla one or the ring)
             float       iconOpacity = 1.0f;   // the icons (not the character's) this opaque
+            float       frameColor[3] = { 1.0f, 1.0f, 1.0f };  // the frame tinted (white: as it is)
+            float       beamColor[3] = { 1.0f, 0.769f, 0.314f };  // the quest beams: their glow (the core and the running light lighter)
+            float       beamWidth = 1.0f;                        // 0.5 .. 3
+            float       beamOpacity = 1.0f;
+            bool        beamLights = true;                       // the light running along the beams
         } look;
     };
 

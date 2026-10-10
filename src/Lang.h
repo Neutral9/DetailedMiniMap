@@ -130,6 +130,15 @@ namespace Lang
         RotateKey,
         HintRotate,
         HintReset,
+        RotateInvertX,
+        RotateInvertY,
+        RotateSpeed,
+        SecFrameBeam,
+        FrameColor,
+        BeamColor,
+        BeamWidth,
+        BeamOpacity,
+        BeamLights,
         kCount
     };
 

@@ -726,9 +726,9 @@ namespace MiniMap
                 const float st = std::sin(tilt), ct = std::cos(tilt);
                 const float R = halfH;
                 const float rows[3][3] = { { rx, ry, 0.0f }, { fx * st, fy * st, ct }, { fx * ct, fy * ct, -st } };
-                // the depth: 4 R either way, never under 20000 units (zoomed in close a tall hill, a deep cave beyond the
-                // middle would fall out of it and vanish)
-                const float axis[3] = { height / (width * R), 1.0f / R, 1.0f / (2.0f * std::max(4.0f * R, 20000.0f)) };
+                // the depth: 4 R either way, never under 100000 units (zoomed in close, or seen nearly edge on with the map
+                // moved off the character, the far hills and the near ground would fall out of it and vanish)
+                const float axis[3] = { height / (width * R), 1.0f / R, 1.0f / (2.0f * std::max(4.0f * R, 100000.0f)) };
                 for (int r = 0; r < 3; ++r) {
                     a_view.rows[r][0] = rows[r][0] * axis[r];
                     a_view.rows[r][1] = rows[r][1] * axis[r];
@@ -1114,6 +1114,10 @@ namespace MiniMap
             float        range = 0.0f;  // world units from the centre to the top edge
             float        yaw = 0.0f;    // turned (radians, 0: north up) and tilted (radians over the floor) - the rotate key held
             float        tilt = 0.0f;
+            float        spinYaw = 0.0f, spinTilt = 0.0f;  // radians a second it turns on by itself (let go in a flick)
+            bool         returning = false;  // R: on its way back to the view it opened with
+            bool         centring = false;   // ...and onto the character (moved or zoomed meanwhile: no more)
+            bool         wasTurning = false;
             float        lastX = 0.0f, lastY = 0.0f;  // the cursor last frame
             // the mouse's own movement to cursor pixels, per axis (sign and speed), learned while the cursor moves
             // freely: dragging goes by the mouse, not by the cursor (the menu holds or clamps it meanwhile)
@@ -1378,8 +1382,13 @@ namespace MiniMap
                     }
                 }
             }
-            const auto name = ref->GetDisplayFullName();
-            return named(name) ? name : "";
+            // as the game names it where it lies, else its base object (an item put there by a script, a mod's with no
+            // name of its own placed: the reference names nothing)
+            if (const auto name = ref->GetDisplayFullName(); named(name)) {
+                return name;
+            }
+            const auto base = ref->GetBaseObject();
+            return base && named(base->GetName()) ? base->GetName() : "";
         }
 
         // the icon under the cursor (the nearest within its badge) and its name
@@ -1390,7 +1399,8 @@ namespace MiniMap
             const auto  look = [&](const std::vector<ScreenIcon>& a_list, bool a_quest) {
                 for (std::size_t i = 0; i < a_list.size(); ++i) {
                     const float dx = a_list[i].x - a_x, dy = a_list[i].y - a_y, d = dx * dx + dy * dy;
-                    if (d < best) {
+                    // one drawn later lies on top: it wins a tie; one all but faded out never
+                    if (d <= best && a_list[i].alpha >= 0.3f) {
                         best = d;
                         a_f.hover = static_cast<int>(i);
                         a_f.hoverQuest = a_quest;
@@ -1408,6 +1418,9 @@ namespace MiniMap
             } else {
                 const auto& icon = a_f.icons[a_f.hover];
                 a_f.hoverName = icon.count > 1 ? std::format("{} ({})", Icons::Name(icon.kind), icon.count) : RefName(icon.id);  // a group: its kind and how many
+                if (a_f.hoverName.empty()) {
+                    a_f.hoverName = Icons::Name(icon.kind);  // nothing named at all: at least what kind it is
+                }
             }
         }
 
@@ -1518,6 +1531,9 @@ namespace MiniMap
                 local.yaw = 0.0f;
                 local.tilt = s.minimapTilt * kDeg;
                 turnHeld = viewReset = false;
+                local.spinYaw = local.spinTilt = 0.0f;
+                local.wasTurning = false;
+                local.returning = false;
                 local.lastX = cx;
                 local.lastY = cy;
                 local.last = now;
@@ -1539,9 +1555,32 @@ namespace MiniMap
             float x0, y0, x1, y1;
             LocalRect(w, h, x0, y0, x1, y1);
             if (viewReset) {
-                local.yaw = 0.0f;
-                local.tilt = s.minimapTilt * kDeg;
+                local.returning = true;  // back to north up and the tilt as set, smoothly
+                local.centring = true;
+                local.spinYaw = local.spinTilt = 0.0f;
                 viewReset = false;
+            }
+            if (local.returning) {
+                // the yaw is kept within half a turn either way: back by the shorter way round
+                const float k = 1.0f - std::exp(-dt / 0.1f), aim = s.minimapTilt * kDeg;
+                // ...and onto the character again
+                const auto home = player->GetPosition();
+                local.yaw -= local.yaw * k;
+                local.tilt += (aim - local.tilt) * k;
+                if (local.centring) {
+                    local.centre.x += (home.x - local.centre.x) * k;
+                    local.centre.y += (home.y - local.centre.y) * k;
+                    local.centre.z = home.z;
+                    if (std::hypot(home.x - local.centre.x, home.y - local.centre.y) < 2.0f) {
+                        local.centre = home;
+                        local.centring = false;
+                    }
+                }
+                if (std::abs(local.yaw) < 0.002f && std::abs(local.tilt - aim) < 0.002f && !local.centring) {
+                    local.yaw = 0.0f;
+                    local.tilt = aim;
+                    local.returning = false;
+                }
             }
             // how much the map's up on the screen goes along the ground (seen edge on: kept from nothing; from below: back)
             const float sn = std::sin(local.tilt);
@@ -1563,6 +1602,7 @@ namespace MiniMap
             legendHeld = legendHeld && mouseHeld;
             // the wheel zooms (up: in) towards the cursor: the point under it stays where it is
             if (wheel != 0) {
+                local.centring = false;  // zoomed: the map is the player's again
                 const float before = (y1 - y0) * 0.5f / local.range;
                 local.range = std::clamp(local.range * std::pow(0.85f, static_cast<float>(wheel)), 300.0f, 20000.0f);
                 const float after = (y1 - y0) * 0.5f / local.range;
@@ -1590,12 +1630,46 @@ namespace MiniMap
             const bool turning = turnHeld && ((s.rotateKey != 0 && Held(s.rotateKey) && (s.rotateMod == 0 || Held(s.rotateMod))) ||
                                                  (s.rotateKeyPad != 0 && Held(s.rotateKeyPad) && (s.rotateModPad == 0 || Held(s.rotateModPad))));
             const auto stick = [](float a_v) { return std::abs(a_v) > 0.15f ? a_v : 0.0f; };
+            // turned round and round; tilted from the ground's edge over the top to its other edge (never from below:
+            // under the ground nothing reads)
+            constexpr float kTiltMin = 3.0f * kDeg, kTiltMax = 177.0f * kDeg;
+            const auto      turn = [&](float a_yaw, float a_tilt) {
+                const float tilt = std::clamp(local.tilt + a_tilt, kTiltMin, kTiltMax);
+                if (tilt != local.tilt + a_tilt) {
+                    local.spinTilt = 0.0f;  // at its end: the tilt's spin stops there
+                }
+                local.yaw = std::remainder(local.yaw + a_yaw, 2.0f * std::numbers::pi_v<float>);
+                local.tilt = tilt;
+            };
             if (turning) {
-                local.yaw += rawX * local.gainX * 0.006f + stick(leftStick.first) * 2.5f * dt;
-                // turned and tilted any way, round and round (over the top, from below)
-                local.tilt = std::remainder(local.tilt - rawY * local.gainY * 0.005f + stick(leftStick.second) * 1.5f * dt, 2.0f * std::numbers::pi_v<float>);
-                local.yaw = std::remainder(local.yaw, 2.0f * std::numbers::pi_v<float>);
+                // slower zoomed in (close up the hills and the houses swing across the whole screen at the least turn)
+                const float rate = std::clamp(std::sqrt(local.range / 2500.0f), 0.35f, 1.0f) * s.rotateSpeed;
+                // by the mouse's own movement (not the cursor's: that may stand at the screen's edge meanwhile); past the top
+                // (seen upside down) left and right swap on the screen - turned the other way they keep their feel
+                const float over = std::cos(local.tilt) < 0.0f ? -1.0f : 1.0f;
+                const float yaw = (rawX * 0.003f + stick(leftStick.first) * 1.5f * dt) * rate * over * (s.rotateInvertX ? -1.0f : 1.0f);
+                const float tilt = (-rawY * 0.0025f + stick(leftStick.second) * 1.0f * dt) * rate * (s.rotateInvertY ? -1.0f : 1.0f);
+                local.returning = false;
+                turn(yaw, tilt);
+                // how fast it turns, smoothed over a few frames: what it keeps spinning at when let go
+                if (dt > 0.0f) {
+                    const float k = 1.0f - std::exp(-dt / 0.05f);
+                    local.spinYaw += (yaw / dt - local.spinYaw) * k;
+                    local.spinTilt += (tilt / dt - local.spinTilt) * k;
+                }
+            } else if (local.wasTurning && std::hypot(local.spinYaw, local.spinTilt) < 1.2f) {
+                local.spinYaw = local.spinTilt = 0.0f;  // let go after stopping: it stays where it is
+            } else if (local.spinYaw != 0.0f || local.spinTilt != 0.0f) {
+                // let go in a flick: it spins on, slowing down
+                turn(local.spinYaw * dt, local.spinTilt * dt);
+                const float slow = std::exp(-2.5f * dt);
+                local.spinYaw *= slow;
+                local.spinTilt *= slow;
+                if (std::hypot(local.spinYaw, local.spinTilt) < 0.03f) {
+                    local.spinYaw = local.spinTilt = 0.0f;
+                }
             }
+            local.wasTurning = turning;
             // dragging moves the map with the mouse; the keys move it a screen's half a second
             float dx = 0.0f, dy = 0.0f;
             if (mouseHeld && !legendHeld && !turning) {
@@ -1614,6 +1688,7 @@ namespace MiniMap
                 local.range = std::clamp(local.range * std::pow(0.85f, zoom * 8.0f * dt), 300.0f, 20000.0f);
             }
             if (dx != 0.0f || dy != 0.0f) {
+                local.centring = false;  // moved: the map is the player's again
                 const float across = -dx / scale, along = dy / (scale * st);
                 local.centre.x += rx * across + fx * along;
                 local.centre.y += ry * across + fy * along;
@@ -1713,6 +1788,22 @@ namespace MiniMap
             return (a_col & 0x00FFFFFFu) | (a << 24);
         }
 
+        // a colour tinted (each channel times a_rgb), its alpha kept
+        ImGui::ImU32 Tinted(ImGui::ImU32 a_col, const float* a_rgb)
+        {
+            const auto ch = [&](int a_shift, float a_k) {
+                return static_cast<ImGui::ImU32>(std::clamp(static_cast<float>((a_col >> a_shift) & 0xFF) * a_k, 0.0f, 255.0f) + 0.5f) << a_shift;
+            };
+            return (a_col & 0xFF000000u) | ch(0, a_rgb[0]) | ch(8, a_rgb[1]) | ch(16, a_rgb[2]);
+        }
+
+        // a colour of 0..1 channels, lightened towards white by a_white
+        ImGui::ImU32 Mixed(const float* a_rgb, float a_white, int a_alpha)
+        {
+            const auto ch = [&](float a_v) { return static_cast<int>(std::clamp(a_v + (1.0f - a_v) * a_white, 0.0f, 1.0f) * 255.0f + 0.5f); };
+            return Rgb(ch(a_rgb[0]), ch(a_rgb[1]), ch(a_rgb[2]), a_alpha);
+        }
+
         float Seconds()  // the beam's running light
         {
             static const auto start = std::chrono::steady_clock::now();
@@ -1725,7 +1816,8 @@ namespace MiniMap
         {
             using V2 = ImGui::ImVec2;
             namespace D = ImGui::ImDrawListManager;
-            const auto kLight = Faded(Rgb(214, 212, 204), a_alpha), kDim = Faded(Rgb(140, 138, 130), a_alpha), kDark = Faded(Rgb(18, 17, 15, 225), a_alpha);
+            const float* tint = Settings::Map().look.frameColor;
+            const auto   kLight = Faded(Tinted(Rgb(214, 212, 204), tint), a_alpha), kDim = Faded(Tinted(Rgb(140, 138, 130), tint), a_alpha), kDark = Faded(Rgb(18, 17, 15, 225), a_alpha);
             const float    out = 4.0f * a_k;  // the outer line past the map's edge
             const V2       centre{ (a_x0 + a_x1) * 0.5f, (a_y0 + a_y1) * 0.5f };
             const float    rim = (a_x1 - a_x0) * 0.5f;
@@ -1744,6 +1836,12 @@ namespace MiniMap
         // running along it
         void DrawBeam(Canvas& a_c, const std::vector<P2>& a_pts, float a_k, float a_alpha)
         {
+            const auto& look = Settings::Map().look;
+            a_alpha *= look.beamOpacity;
+            if (a_alpha <= 0.0f) {
+                return;
+            }
+            const float wide = look.beamWidth;
             const auto& pts = a_pts;
             // its length along the way, and where it starts (past the character's badge) and ends (short of the
             // target's icon)
@@ -1773,24 +1871,27 @@ namespace MiniMap
                 }
             }
             legs.push_back(point(to));
-            const auto glow = Faded(Rgb(255, 196, 80, 60), a_alpha), core = Faded(Rgb(255, 222, 140, 215), a_alpha);
+            const auto glow = Faded(Mixed(look.beamColor, 0.0f, 60), a_alpha), core = Faded(Mixed(look.beamColor, 0.45f, 215), a_alpha);
             for (std::size_t i = 1; i < legs.size(); ++i) {
-                a_c.Line(legs[i - 1], legs[i], glow, 8.0f * a_k);
+                a_c.Line(legs[i - 1], legs[i], glow, 8.0f * a_k * wide);
             }
             for (std::size_t i = 1; i + 1 < legs.size(); ++i) {
-                a_c.Disc(legs[i], 4.0f * a_k, glow);
+                a_c.Disc(legs[i], 4.0f * a_k * wide, glow);
             }
             for (std::size_t i = 1; i < legs.size(); ++i) {
-                a_c.Line(legs[i - 1], legs[i], core, 2.2f * a_k);
+                a_c.Line(legs[i - 1], legs[i], core, 2.2f * a_k * wide);
             }
             for (std::size_t i = 1; i + 1 < legs.size(); ++i) {
-                a_c.Disc(legs[i], 1.1f * a_k, core);
+                a_c.Disc(legs[i], 1.1f * a_k * wide, core);
+            }
+            if (!look.beamLights) {
+                return;
             }
             const float step = 24.0f * a_k;
             for (float d = from + std::fmod(Seconds() * 55.0f * a_k, step); d < to; d += step) {
                 // brightest in the middle of the beam, fading at its ends
                 const float t = std::min(d - from, to - d) / (12.0f * a_k);
-                a_c.Disc(point(d), 2.3f * a_k, Faded(Rgb(255, 245, 205, 235), a_alpha * std::clamp(t, 0.0f, 1.0f)));
+                a_c.Disc(point(d), 2.3f * a_k * wide, Faded(Mixed(look.beamColor, 0.8f, 235), a_alpha * std::clamp(t, 0.0f, 1.0f)));
             }
         }
 
@@ -1856,13 +1957,13 @@ namespace MiniMap
             } else if (framed) {
                 // a frame's picture: its hole over ours, the band round it
                 const float half = rim / Icons::kFrameHole;
-                ImGui::ImDrawListManager::AddImage(a_dl, framed, V2{ centre.x - half, centre.y - half }, V2{ centre.x + half, centre.y + half }, V2{ 0.0f, 0.0f }, V2{ 1.0f, 1.0f }, Faded(Rgb(255, 255, 255), fa));
+                ImGui::ImDrawListManager::AddImage(a_dl, framed, V2{ centre.x - half, centre.y - half }, V2{ centre.x + half, centre.y + half }, V2{ 0.0f, 0.0f }, V2{ 1.0f, 1.0f }, Faded(Tinted(Rgb(255, 255, 255), Settings::Map().look.frameColor), fa));
             } else if (vanilla) {
                 DrawVanillaFrame(a_dl, a_f.mx0, a_f.my0, a_f.mx1, a_f.my1, corner, a_f.round, a_k, fa);
             } else if (a_f.round) {
-                ImGui::ImDrawListManager::AddCircle(a_dl, centre, rim, Faded(Rgb(150, 120, 75), fa), 96, 1.5f * a_k);
+                ImGui::ImDrawListManager::AddCircle(a_dl, centre, rim, Faded(Tinted(Rgb(150, 120, 75), Settings::Map().look.frameColor), fa), 96, 1.5f * a_k);
             } else {
-                ImGui::ImDrawListManager::AddRect(a_dl, V2{ a_f.mx0, a_f.my0 }, V2{ a_f.mx1, a_f.my1 }, Faded(Rgb(150, 120, 75), fa), corner, 0, 1.5f * a_k);
+                ImGui::ImDrawListManager::AddRect(a_dl, V2{ a_f.mx0, a_f.my0 }, V2{ a_f.mx1, a_f.my1 }, Faded(Tinted(Rgb(150, 120, 75), Settings::Map().look.frameColor), fa), corner, 0, 1.5f * a_k);
             }
         }
 

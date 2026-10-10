@@ -114,6 +114,9 @@ namespace Menu
                 KeyButton(Lang::T(S::LocalMapKey), m.localMapKey, m.localMapMod, m.localMapKeyPad, m.localMapModPad, "localmap");
                 Check(Lang::L(S::LocalMapHold).c_str(), m.localMapHold);
                 KeyButton(Lang::T(S::RotateKey), m.rotateKey, m.rotateMod, m.rotateKeyPad, m.rotateModPad, "rotate");
+                Check(Lang::L(S::RotateInvertX).c_str(), m.rotateInvertX);
+                Check(Lang::L(S::RotateInvertY).c_str(), m.rotateInvertY);
+                Slider(S::RotateSpeed, m.rotateSpeed, 0.2f, 3.0f, "%.2f");
             }
             // the map only with an item in the inventory: its EditorID (or Plugin.esp|0x800) typed under the box
             Check(Lang::L(S::NeedItem).c_str(), m.needItem);
@@ -267,6 +270,12 @@ namespace Menu
             }
             Slider(S::FrameOpacity, l.frameOpacity, 0.0f, 1.0f, "%.2f");
             Slider(S::IconOpacity, l.iconOpacity, 0.05f, 1.0f, "%.2f");
+            ImGui::SeparatorText(Lang::T(S::SecFrameBeam));
+            Color(Lang::L(S::FrameColor).c_str(), l.frameColor);
+            Color(Lang::L(S::BeamColor).c_str(), l.beamColor);
+            Slider(S::BeamWidth, l.beamWidth, 0.5f, 3.0f, "%.2f");
+            Slider(S::BeamOpacity, l.beamOpacity, 0.0f, 1.0f, "%.2f");
+            Check(Lang::L(S::BeamLights).c_str(), l.beamLights);
             const bool colour = l.style == 0;  // the vanilla style has its own palette: no colours to set
             ImGui::SeparatorText(Lang::T(S::SecGround));
             if (colour) {
