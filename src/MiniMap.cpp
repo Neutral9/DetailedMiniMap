@@ -1,5 +1,6 @@
 #include "MiniMap.h"
 
+#include "Fog.h"
 #include "Icons.h"
 #include "Lang.h"
 #include "MapMesh.h"
@@ -46,7 +47,15 @@ namespace MiniMap
         bool mouseClicked = false;  // ...pressed since the last local map update
         bool legendHeld = false;    // ...pressed on the legend: no dragging the map with it
         int  wheel = 0;          // wheel steps since the last map update (up: +)
-        std::pair<float, float> leftStick{}, rightStick{};  // the gamepad's sticks (the local map: moved, zoomed)
+        constexpr std::uint32_t kPadLT = 280, kPadRT = 281, kPadRS = 273;  // the gamepad's triggers, the right stick pressed (266 + their index)
+        std::pair<float, float> leftStick{}, rightStick{};  // the gamepad's sticks (the local map: moved, turned)
+        std::atomic_bool        padInUse = false;  // the gamepad touched last (not the keyboard or the mouse): its keys shown
+        // the gamepad on the local map's legend: the d-pad walks it (0 the fold button, 1 .. the kinds, then the buttons' row),
+        // A presses what is picked; the presses since the last update (bits: 1 up, 2 down, 4 left, 8 right, 16 A)
+        std::atomic<int>        padNav = 0;
+        int                     legendPick = 1, legendCol = 0;
+        float                   padPointX = -1.0f, padPointY = -1.0f;  // the picked one's middle on the screen (lit as under a cursor)
+        bool                    cursorHidden = false;                  // the game's cursor hidden by us (the gamepad in use)
         float saveIn = -1.0f;    // seconds until a zoomed minimap range is written to the ini
         std::atomic<std::uint32_t*> captureMod = nullptr;  // the bind being set: where the key held with it goes
         std::atomic<std::uint32_t>  captureFirst = 0;        // ...the first key pressed for it, waiting: let go alone, or another pressed with it
@@ -118,11 +127,48 @@ namespace MiniMap
             return a_player->GetAngleZ();
         }
 
-        // world units from the minimap's centre to its edge: outside, or in caves and houses
-        float MinimapRange(bool a_inside)
+        // the dynamic zoom: the range times this, following the pace (main thread)
+        float paceZoom = 1.0f;
+
+        // world units from the minimap's centre to its edge: outside, or in caves and houses (a_paced: with the dynamic
+        // zoom)
+        float MinimapRange(bool a_inside, bool a_paced = true)
         {
             const auto& s = Settings::Map();
-            return a_inside ? s.minimapRangeInside : s.minimapRange;
+            return (a_inside ? s.minimapRangeInside : s.minimapRange) * (a_paced ? paceZoom : 1.0f);
+        }
+
+        // the dynamic zoom followed: the character's speed (SpeedMult: slowed, hasted) sets it, sprinting or riding
+        // moves it out - while moving; eased over a second or two
+        void Pace(RE::PlayerCharacter* a_player, float a_dt)
+        {
+            static RE::NiPoint3 last{};
+            static float        speed = 0.0f;  // units a second over the ground, smoothed
+            const auto&         s = Settings::Map();
+            const auto          at = a_player->GetPosition();
+            if (a_dt > 0.0f) {
+                const float d = std::hypot(at.x - last.x, at.y - last.y);
+                if (d < 3000.0f) {  // a teleport, a load door: not a pace
+                    speed += (d / a_dt - speed) * (1.0f - std::exp(-a_dt * 4.0f));
+                }
+            }
+            last = at;
+            float target = 1.0f;
+            if (s.dynamicZoom) {
+                const auto mult = [](RE::Actor* a_actor) {
+                    return std::clamp(a_actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeedMult) / 100.0f, 0.1f, 4.0f);
+                };
+                float                    pace = mult(a_player);
+                const bool               moving = speed > 40.0f;
+                RE::NiPointer<RE::Actor> mount;
+                if (a_player->IsOnMount() && a_player->GetMount(mount) && mount) {
+                    pace = moving ? mult(mount.get()) * (mount->AsActorState()->IsSprinting() ? 2.6f : 1.8f) : 1.0f;
+                } else if (moving && a_player->AsActorState()->IsSprinting()) {
+                    pace *= 1.45f;
+                }
+                target = std::clamp(std::pow(pace, 0.5f * s.dynamicZoomStrength), 0.5f, 2.2f);
+            }
+            paceZoom += (target - paceZoom) * (1.0f - std::exp(-a_dt * 1.5f));
         }
 
         // how far from the character the minimap's square reaches: across half its side, ahead stretched by the tilt;
@@ -320,6 +366,32 @@ namespace MiniMap
             return false;
         }
 
+        // a nirnroot (the game's ingredient, or a mod's plant by its model): its own icon, apart from the other plants
+        std::optional<Kind> Nirnroot(RE::TESBoundObject* a_base)
+        {
+            const RE::TESBoundObject* produce = nullptr;
+            if (const auto flora = a_base->As<RE::TESFlora>()) {
+                produce = flora->produceItem;
+            } else if (const auto tree = a_base->As<RE::TESObjectTREE>()) {
+                produce = tree->produceItem;
+            }
+            constexpr RE::FormID kNirnroot = 0x00059B86, kCrimson = 0x000B701A;  // Skyrim.esm
+            if (produce && produce->GetFormID() == kNirnroot) {
+                return Kind::kNirnroot;
+            }
+            if (produce && produce->GetFormID() == kCrimson) {
+                return Kind::kCrimson;
+            }
+            if (const auto model = a_base->As<RE::TESModel>(); model && model->GetModel()) {
+                std::string path = model->GetModel();
+                std::ranges::transform(path, path.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (path.contains("nirnroot")) {
+                    return path.contains("crimson") ? Kind::kCrimson : Kind::kNirnroot;
+                }
+            }
+            return std::nullopt;
+        }
+
         // an ore vein with ore left: an activator running the game's MineOreScript (mods' veins use it too), its
         // ResourceCountCurrent not down to 0 (-1: never mined)
         bool OreLeft(RE::TESObjectREFR* a_ref)
@@ -372,7 +444,7 @@ namespace MiniMap
                     statics.push_back({ a_ref->GetPosition(), Chest(base) ? Kind::kChest : Kind::kContainer, a_ref->GetFormID() });
                 } else if (base->Is(RE::FormType::Flora) || base->Is(RE::FormType::Tree)) {
                     if (Pickable(a_ref, base)) {
-                        statics.push_back({ a_ref->GetPosition(), Kind::kFlora, a_ref->GetFormID() });
+                        statics.push_back({ a_ref->GetPosition(), Nirnroot(base).value_or(Kind::kFlora), a_ref->GetFormID() });
                     }
                 } else if (base->Is(RE::FormType::Activator)) {
                     if (a_ref->Is3DLoaded() && OreLeft(a_ref)) {
@@ -408,9 +480,29 @@ namespace MiniMap
             return aggressive;
         }
 
+        // detected by a detect spell: Detect Life, Detect Dead, Aura Whisper (the game's Detect Life archetype, a mod's
+        // too) put their effect on each one they find round the caster - not on the caster - and that one glows
+        bool Detected(RE::Actor* a_actor)
+        {
+            const auto target = a_actor->AsMagicTarget();
+            const auto list = target ? target->GetActiveEffectList() : nullptr;
+            if (!list) {
+                return false;
+            }
+            for (const auto effect : *list) {
+                const auto base = effect ? effect->GetBaseObject() : nullptr;
+                if (base && base->GetArchetype() == RE::EffectSetting::Archetype::kDetectLife && effect->flags.none(RE::ActiveEffect::Flag::kDispelled)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         // the characters as they stand this frame, within a_range
         void Characters(RE::PlayerCharacter* a_player, float a_range, std::vector<Marker>& a_out)
         {
+            // the setting: characters only while a detect spell finds them (the enemies, or all but the followers)
+            const int detect = Settings::Map().detectOnly;
             const auto pos = a_player->GetPosition();
             const auto lists = RE::ProcessLists::GetSingleton();
             for (std::uint32_t i = 0; lists && i < lists->highActorHandles.size(); ++i) {
@@ -434,6 +526,9 @@ namespace MiniMap
                     kind = Kind::kNpc;
                 } else {
                     kind = Kind::kCreature;
+                }
+                if (detect != 0 && (kind == Kind::kEnemy || (detect == 2 && kind != Kind::kFollower)) && !Detected(actor)) {
+                    continue;
                 }
                 a_out.push_back({ actor->GetPosition(), kind, actor->GetFormID() });
             }
@@ -515,6 +610,7 @@ namespace MiniMap
             float               beyond = 0.0f;   // a target past doors: the way on from the door here to it (straight, world units)
             RE::NiPoint3        goal;            // where its way on the navmesh goes: the target, or before a door the spot one comes in by it
             bool                door = false;    // a door on the way (goal stays)
+            bool                custom = false;  // the destination set on the world map (Set Destination), no quest's
         };
         std::vector<QuestPoint> quests;  // main thread: gathered with the statics
 
@@ -606,12 +702,18 @@ namespace MiniMap
                         door ? ApproachOf(at) : at->GetPosition(), door });
                 }
             }
+            // the destination set on the world map: where it is in this world space (the game shows it nowhere else either)
+            if (const auto marker = a_player->GetInfoRuntimeData().playerMapMarker.get(); marker && !marker->IsDisabled() && HereToo(marker.get(), a_player)) {
+                quests.push_back({ marker->CreateRefHandle(), marker->GetPosition(), Lang::T(Lang::S::Destination), 0, false, 0.0f, marker->GetPosition(), false, true });
+            }
         }
 
         struct Beam
         {
             RE::NiPoint3 target;  // where it ends (the target, or the door towards it)
             RE::NiPoint3 goal;    // where its walking path is searched to (QuestPoint::goal)
+            std::string  name;      // the quest's, or the destination's (shown with the cursor over it)
+            float        colour[3]{};
         };
 
         // ---- what a map picture needs from the game, taken on the main thread
@@ -626,8 +728,8 @@ namespace MiniMap
             float                     waterLevel = 0.0f;  // ...the surface it is under
             RE::FormID                space = 0;
             std::vector<Marker>       markers;
-            std::vector<RE::NiPoint3> quests;
-            std::vector<Beam>         beams;  // where the beams go
+            std::vector<std::pair<RE::NiPoint3, bool>> quests;  // where, and whether it is the destination set on the world map
+            std::vector<Beam>                          beams;   // where the beams go
         };
 
         // the beams' targets: one a quest set active in the journal, to its nearest target; or (the setting) one beam
@@ -645,7 +747,12 @@ namespace MiniMap
             };
             std::map<RE::FormID, const QuestPoint*> nearest;  // per quest, or (one beam) all under 0
             const bool                              one = Settings::Map().beamNearest;
+            const QuestPoint*                       destination = nullptr;
             for (const auto& q : quests) {
+                if (q.custom) {
+                    destination = &q;
+                    continue;
+                }
                 if (!one && !q.active) {
                     continue;
                 }
@@ -654,8 +761,22 @@ namespace MiniMap
                     best = &q;
                 }
             }
+            // the colours: the first as set, the others (one a quest, the setting) from a palette in the quests' order - a quest
+            // keeps its colour while the others come and go only as far as their order allows
+            static constexpr float kPalette[][3] = { { 0.35f, 0.75f, 1.0f }, { 0.55f, 1.0f, 0.45f }, { 1.0f, 0.45f, 0.75f }, { 0.75f, 0.55f, 1.0f }, { 1.0f, 0.55f, 0.3f } };
+            const auto& look = Settings::Map().look;
+            std::size_t n = 0;
             for (const auto& [quest, q] : nearest) {
-                out.push_back({ q->pos, q->goal });
+                Beam b{ q->pos, q->goal, q->name };
+                const float* c = n == 0 || !look.beamColours ? look.beamColor : kPalette[(n - 1) % std::size(kPalette)];
+                std::copy_n(c, 3, b.colour);
+                out.push_back(std::move(b));
+                ++n;
+            }
+            if (destination && Settings::Map().destinationBeam && Shown(Kind::kDestination)) {
+                Beam b{ destination->pos, destination->goal, destination->name };
+                std::copy_n(look.destinationColor, 3, b.colour);
+                out.push_back(std::move(b));
             }
             return out;
         }
@@ -694,7 +815,7 @@ namespace MiniMap
                         q.goal = q.pos;
                     }
                 }
-                w.quests.push_back(q.pos);
+                w.quests.emplace_back(q.pos, q.custom);
             }
             w.beams = BeamTargets(w.player);
             return w;
@@ -776,6 +897,28 @@ namespace MiniMap
             return v;
         }
 
+        // the fog of war on a picture (the minimap's, the local map's): its look, or none
+        void FogLook(MapMesh::View& a_view, bool a_on)
+        {
+            const auto& l = Settings::Map().look;
+            for (int i = 0; i < 3; ++i) {
+                a_view.fog[i] = l.fogColor[i];
+            }
+            a_view.fog[3] = a_on ? l.fogOpacity : 0.0f;
+            a_view.fogNoise = l.fogNoise;
+        }
+
+        // how much of a thing the fog leaves to see on a map (1 where it was seen, less under the fog)
+        float FogLeaves(bool a_local, RE::FormID a_space, const RE::NiPoint3& a_at)
+        {
+            const auto& s = Settings::Map();
+            if (!s.fog || !s.fogHideIcons || !(a_local ? s.fogLocal : s.fogMinimap)) {
+                return 1.0f;
+            }
+            const float t = std::clamp((Fog::Seen(a_space, a_at.x, a_at.y) - 0.1f) / 0.7f, 0.0f, 1.0f);
+            return 1.0f - (1.0f - t * t * (3.0f - 2.0f * t)) * s.look.fogOpacity;
+        }
+
         // ---- a map picture with its markers, built on the main thread, drawn by the HUD element
         using P2 = std::pair<float, float>;
 
@@ -788,6 +931,7 @@ namespace MiniMap
             RE::FormID id = 0;         // the reference (a quest target: its index in quests)
             int        count = 1;      // icons of its kind merged into it (close together on the picture)
             float      wx = 0, wy = 0; // where it is in the world (grouped by: the same whichever way the map turns)
+            float      wz = 0;
         };
         // on another level than the character (an upper floor, a cellar, a ledge above): dimmer the farther up or down
         float LevelShade(float a_dz)
@@ -805,9 +949,15 @@ namespace MiniMap
             std::vector<ScreenIcon>      icons;
             std::vector<ScreenIcon>      quests;         // quest targets (pulled onto the rim when past it)
             std::vector<std::vector<P2>> beams;          // the beams to the quest targets (each from the character)
+            std::vector<std::array<float, 3>> beamColours;  // ...each one's colour
+            std::vector<std::string>          beamNames;    // ...and what it leads to
+            int                               hoverBeam = -1;  // the local map: the beam under the cursor (its name shown by it)
+            float                             hoverX = 0, hoverY = 0;
             float                        arrowAngle = 0.0f;
+            std::array<P2, 4>            compass{};      // north, east, south, west: their ways on the screen (unit; 0: none)
             float                        alpha = 1.0f;   // the whole map: fading in or out
             float                        cursorX = -1.0f, cursorY = -1.0f;  // the local map: the menu's cursor (drawn over the map)
+            bool                         padCursor = false;  // ...the gamepad's pick on the legend instead (no cursor drawn)
             std::string                  title;          // the local map: where the character is
             int                          hover = -1;     // the local map: the icon under the cursor (in icons, or in quests)
             bool                         hoverQuest = false;
@@ -936,45 +1086,186 @@ namespace MiniMap
             frame = {};
         }
 
+        // how far into its group each icon is (0: on its own, 1: merged), eased over a moment: icons slide together
+        // into a group and out of it, never jump (one set a picture: the minimap and the local map zoom apart)
+        struct Joining
+        {
+            float         p = 0.0f;               // into its group
+            float         cx = 0, cy = 0, cz = 0; // the group's middle in the world (followed smoothly when it changes)
+            std::uint64_t seen = 0;               // the frame it was last on the picture
+        };
+        struct Joinings
+        {
+            std::unordered_map<RE::FormID, Joining> of;
+            std::uint64_t                           frame = 0;
+            std::chrono::steady_clock::time_point   last{};
+        };
+        Joinings joinings[2];  // the minimap, the local map
+
+        constexpr float kJoinRate = 12.0f;  // per second: about a quarter of a second to merge or part
+
+        float Ease(float a_t)
+        {
+            return a_t * a_t * (3.0f - 2.0f * a_t);
+        }
+
         // icons of one kind close together (a room of barrels) merged into one at their middle, bigger the more it
         // holds; zoomed in they part again (the setting). Close in the world, by the map's scale (a_pxPerUnit): the
         // same groups whichever way a tilted map turns (on the screen the distances change as it turns - icons would
-        // join and part all the time); measured from each group's first icon, so a group does not creep
-        void GroupIcons(std::vector<ScreenIcon>& a_icons, float a_pxPerUnit)
+        // join and part all the time); measured from each group's first icon, so a group does not creep. Merging and
+        // parting is eased: the icons slide to the group's middle as it fades in, and back out as it fades away
+        template <class ToScreen>
+        void GroupIcons(std::vector<ScreenIcon>& a_icons, float a_pxPerUnit, bool a_local, ToScreen&& a_toScreen)
         {
             const auto& s = Settings::Map();
-            if (!s.groupIcons || a_icons.size() < 2 || a_pxPerUnit <= 0.0f) {
+            auto&       state = joinings[a_local ? 1 : 0];
+            const auto  clock = std::chrono::steady_clock::now();
+            const float dt = state.last == std::chrono::steady_clock::time_point{} ? 0.0f : std::min(std::chrono::duration<float>(clock - state.last).count(), 0.25f);
+            state.last = clock;
+            const std::uint64_t frameNo = ++state.frame;
+            const float         step = 1.0f - std::exp(-kJoinRate * dt);
+            if (a_pxPerUnit <= 0.0f) {
                 return;
             }
-            const float reach = 14.0f * (screenH / 1080.0f) * s.iconSize / a_pxPerUnit;  // about an icon across, in world units
-            std::vector<ScreenIcon> out;
-            std::vector<P2>         first;  // per group: its first icon in the world
-            std::vector<P2>         sum;    // per group: the positions on the picture added up
-            for (const auto& i : a_icons) {
-                std::size_t at = out.size();
-                for (std::size_t g = 0; g < out.size(); ++g) {
-                    const float dx = first[g].first - i.wx, dy = first[g].second - i.wy;
-                    if (out[g].kind == i.kind && dx * dx + dy * dy < reach * reach) {
-                        at = g;
-                        break;
+
+            // the groups as they are now
+            const float                           reach = 14.0f * (screenH / 1080.0f) * s.iconSize / a_pxPerUnit;  // about an icon across, in world units
+            std::vector<std::vector<std::size_t>> groups;
+            std::vector<P2>                       first;  // per group: its first icon in the world
+            for (std::size_t n = 0; n < a_icons.size(); ++n) {
+                const auto& i = a_icons[n];
+                std::size_t at = groups.size();
+                if (s.groupIcons) {
+                    for (std::size_t g = 0; g < groups.size(); ++g) {
+                        const float dx = first[g].first - i.wx, dy = first[g].second - i.wy;
+                        if (a_icons[groups[g][0]].kind == i.kind && dx * dx + dy * dy < reach * reach) {
+                            at = g;
+                            break;
+                        }
                     }
                 }
-                if (at == out.size()) {
-                    out.push_back(i);
+                if (at == groups.size()) {
+                    groups.push_back({ n });
                     first.push_back({ i.wx, i.wy });
-                    sum.push_back({ i.x, i.y });
+                } else {
+                    groups[at].push_back(n);
+                }
+            }
+
+            std::vector<ScreenIcon> out;
+            // a group's icon: at its middle, holding a_count, seen as much as a_seen
+            const auto merged = [&](const ScreenIcon& a_like, float a_x, float a_y, int a_count, float a_alpha, float a_shade, float a_seen) {
+                ScreenIcon g = a_like;
+                g.x = a_x;
+                g.y = a_y;
+                g.count = a_count;
+                g.alpha = a_alpha * a_seen;
+                g.shade = a_shade;
+                out.push_back(g);
+            };
+            // icons parting from a group gone: by the middle they leave (to a few units), their group fading out there
+            std::map<std::tuple<int, int, int, Kind>, std::vector<std::size_t>> parting;
+
+            for (const auto& members : groups) {
+                const bool together = members.size() > 1;
+                float      mx = 0, my = 0, mz = 0;
+                for (const auto n : members) {
+                    mx += a_icons[n].wx;
+                    my += a_icons[n].wy;
+                    mz += a_icons[n].wz;
+                }
+                const float count = static_cast<float>(members.size());
+                mx /= count;
+                my /= count;
+                mz /= count;
+                float least = 1.0f, alpha = 0.0f, shade = 0.0f;
+                for (const auto n : members) {
+                    const auto& i = a_icons[n];
+                    auto&       j = state.of[i.id];
+                    const bool  fresh = j.seen + 1 < frameNo || i.id == 0;  // not on the last picture: no easing from what it was then
+                    j.seen = frameNo;
+                    if (together) {
+                        if (fresh || j.p <= 0.0f) {
+                            j.cx = mx, j.cy = my, j.cz = mz;
+                        } else {
+                            j.cx += (mx - j.cx) * step, j.cy += (my - j.cy) * step, j.cz += (mz - j.cz) * step;
+                        }
+                        j.p = fresh ? 1.0f : std::min(j.p + (1.0f - j.p) * step + 0.002f, 1.0f);
+                    } else {
+                        j.p = fresh ? 0.0f : std::max(j.p - j.p * step - 0.002f, 0.0f);
+                    }
+                    least = std::min(least, j.p);
+                    alpha = std::max(alpha, i.alpha);
+                    shade = std::max(shade, i.shade);
+                }
+                if (!together) {
+                    const auto& i = a_icons[members[0]];
+                    const auto& j = state.of[i.id];
+                    if (j.p > 0.0f) {
+                        const auto q = [](float a_v) { return static_cast<int>(std::lround(a_v / 8.0f)); };
+                        parting[{ q(j.cx), q(j.cy), q(j.cz), i.kind }].push_back(members[0]);
+                    } else {
+                        out.push_back(i);
+                    }
                     continue;
                 }
-                auto& o = out[at];
-                ++o.count;
-                sum[at].first += i.x;
-                sum[at].second += i.y;
-                o.x = sum[at].first / static_cast<float>(o.count);
-                o.y = sum[at].second / static_cast<float>(o.count);
-                o.alpha = std::max(o.alpha, i.alpha);
-                o.shade = std::max(o.shade, i.shade);
+                const auto [gx, gy] = a_toScreen(RE::NiPoint3{ mx, my, mz });
+                // the members sliding in, fading as the group comes
+                const float fadeIn = Ease(least);
+                if (fadeIn < 1.0f) {
+                    for (const auto n : members) {
+                        auto        i = a_icons[n];
+                        const auto& j = state.of[i.id];
+                        const auto [jx, jy] = a_toScreen(RE::NiPoint3{ j.cx, j.cy, j.cz });
+                        const float t = Ease(j.p);
+                        i.x += (jx - i.x) * t;
+                        i.y += (jy - i.y) * t;
+                        i.alpha *= 1.0f - fadeIn;
+                        out.push_back(i);
+                    }
+                }
+                if (fadeIn > 0.0f) {
+                    merged(a_icons[members[0]], gx, gy, static_cast<int>(members.size()), alpha, shade, fadeIn);
+                }
             }
+            for (const auto& [where, members] : parting) {
+                const auto& c = state.of[a_icons[members[0]].id];
+                const auto [gx, gy] = a_toScreen(RE::NiPoint3{ c.cx, c.cy, c.cz });
+                float most = 0.0f, alpha = 0.0f, shade = 0.0f;
+                for (const auto n : members) {
+                    most = std::max(most, state.of[a_icons[n].id].p);
+                    alpha = std::max(alpha, a_icons[n].alpha);
+                    shade = std::max(shade, a_icons[n].shade);
+                }
+                const float fadeIn = members.size() > 1 ? Ease(most) : 0.0f;
+                for (const auto n : members) {
+                    auto        i = a_icons[n];
+                    const float t = Ease(state.of[i.id].p);
+                    i.x += (gx - i.x) * t;
+                    i.y += (gy - i.y) * t;
+                    i.alpha *= 1.0f - fadeIn;
+                    out.push_back(i);
+                }
+                if (fadeIn > 0.0f) {
+                    merged(a_icons[members[0]], gx, gy, static_cast<int>(members.size()), alpha, shade, fadeIn);
+                }
+            }
+            // what left the picture is forgotten
+            std::erase_if(state.of, [&](const auto& a_e) { return a_e.second.seen != frameNo; });
             a_icons = std::move(out);
+        }
+
+        // where north, east, south and west lie on a picture: the ways from the character to points that way
+        template <class ToScreen>
+        void Compass(Frame& a_f, const RE::NiPoint3& a_at, ToScreen&& a_toScreen)
+        {
+            const auto [x0, y0] = a_toScreen(a_at);
+            const RE::NiPoint3 ways[4] = { { 0.0f, 1000.0f, 0.0f }, { 1000.0f, 0.0f, 0.0f }, { 0.0f, -1000.0f, 0.0f }, { -1000.0f, 0.0f, 0.0f } };
+            for (int i = 0; i < 4; ++i) {
+                const auto [x, y] = a_toScreen(a_at + ways[i]);
+                const float dx = x - x0, dy = y - y0, len = std::sqrt(dx * dx + dy * dy);
+                a_f.compass[i] = len > 1e-3f ? P2{ dx / len, dy / len } : P2{ 0.0f, 0.0f };
+            }
         }
 
         // the markers, the quest targets and the beams of a picture (a_pxPerUnit: its scale); a_inside(x, y): on the picture, a_rim(x, y): pulled
@@ -986,18 +1277,25 @@ namespace MiniMap
                 if (!Shown(m.kind)) {
                     continue;
                 }
+                // the character under water: only what lies under its surface (quest targets stay), the rest fading as they dive
+                const float above = (a_world.underwater > 0.0f && m.pos.z > a_world.waterLevel ? 1.0f - a_world.underwater : 1.0f) * FogLeaves(a_f.local, a_world.space, m.pos);  // ...and under the fog of war: not seen
+                if (above <= 0.01f) {
+                    continue;
+                }
                 const auto [x, y] = a_toScreen(m.pos);
                 if (const float edge = a_inside(x, y); edge > 0.0f) {
-                    a_f.icons.push_back({ x, y, m.kind, m.alpha * edge, LevelShade(m.pos.z - a_world.player.z), m.id, 1, m.pos.x, m.pos.y });
+                    a_f.icons.push_back({ x, y, m.kind, m.alpha * edge * above, LevelShade(m.pos.z - a_world.player.z), m.id, 1, m.pos.x, m.pos.y, m.pos.z });
                 }
             }
-            GroupIcons(a_f.icons, a_pxPerUnit);
-            if (Shown(Kind::kQuest)) {
-                for (std::size_t i = 0; i < a_world.quests.size(); ++i) {
-                    const auto& q = a_world.quests[i];
-                    const auto [x, y] = a_rim(a_toScreen(q));
-                    a_f.quests.push_back({ x, y, Kind::kQuest, 1.0f, LevelShade(q.z - a_world.player.z), static_cast<RE::FormID>(i) });
+            GroupIcons(a_f.icons, a_pxPerUnit, a_f.local, a_toScreen);
+            for (std::size_t i = 0; i < a_world.quests.size(); ++i) {
+                const auto& [q, custom] = a_world.quests[i];
+                const auto kind = custom ? Kind::kDestination : Kind::kQuest;
+                if (!Shown(kind)) {
+                    continue;
                 }
+                const auto [x, y] = a_rim(a_toScreen(q));
+                a_f.quests.push_back({ x, y, kind, 1.0f, LevelShade(q.z - a_world.player.z), static_cast<RE::FormID>(i) });
             }
             // the beams: along their ways, on the screen, ending where they leave the picture
             for (const auto& beam : a_world.beams) {
@@ -1023,6 +1321,8 @@ namespace MiniMap
                 }
                 if (line.size() >= 2) {
                     a_f.beams.push_back(std::move(line));
+                    a_f.beamColours.push_back({ beam.colour[0], beam.colour[1], beam.colour[2] });
+                    a_f.beamNames.push_back(beam.name);
                 }
             }
         }
@@ -1034,12 +1334,12 @@ namespace MiniMap
             const float size = s.minimapSize * k;
             Frame       f;
             f.has = true;
-            // in its corner of the screen, this far from the edges (kept on the screen)
-            const bool right = (s.anchor & 1) != 0, bottom = (s.anchor & 2) != 0;
+            // in its corner of the screen, this far from the edges - or in its middle, this far off it (kept on the screen)
+            const bool centre = s.anchor == 4, right = (s.anchor & 1) != 0, bottom = (s.anchor & 2) != 0;
             // a frame's picture reaches past the picture: room left for it on the screen
             const float band = s.minimapFrame && !s.look.frameStyle.empty() ? size * (1.0f / Icons::kFrameHole - 1.0f) * 0.5f : 0.0f;
-            f.mx0 = std::clamp(right ? a_w - s.offsetX * k - size - band : s.offsetX * k + band, band, std::max(a_w - size - band, band));
-            f.my0 = std::clamp(bottom ? a_h - s.offsetY * k - size - band : s.offsetY * k + band, band, std::max(a_h - size - band, band));
+            f.mx0 = std::clamp(centre ? (a_w - size) * 0.5f + s.offsetX * k : right ? a_w - s.offsetX * k - size - band : s.offsetX * k + band, band, std::max(a_w - size - band, band));
+            f.my0 = std::clamp(centre ? (a_h - size) * 0.5f + s.offsetY * k : bottom ? a_h - s.offsetY * k - size - band : s.offsetY * k + band, band, std::max(a_h - size - band, band));
             f.mx1 = f.mx0 + size;
             f.my1 = f.my0 + size;
             f.px = (f.mx0 + f.mx1) * 0.5f;
@@ -1047,6 +1347,7 @@ namespace MiniMap
             f.arrowAngle = a_world.heading - a_world.yaw;  // the character's heading relative to the map's up
 
             const Ortho o{ a_world.player, a_world.yaw, s.minimapTilt * kDeg, MinimapRange(a_world.inside), size, size };
+            Compass(f, a_world.player, [&](const RE::NiPoint3& a_p) { return o.ToScreen(a_p); });
             const float margin = 12.0f * k;
             const float cx = f.px, cy = f.py, rim = size * 0.5f;
             f.round = s.minimapRound;
@@ -1101,6 +1402,7 @@ namespace MiniMap
                 });
             auto view = MeshView(a_world, size, size);
             o.Fill(view);
+            FogLook(view, Settings::Map().fog && Settings::Map().fogMinimap);
             view.range = MinimapReach(a_world.inside);
             f.view = view;
             return f;
@@ -1174,21 +1476,67 @@ namespace MiniMap
             a_y1 = a_h;
         }
 
+        // the compass's letters: their size, how far in from the rim their middles are
+        float CompassSize(bool a_local, float a_k)
+        {
+            return (a_local ? 28.0f : 18.0f) * a_k * Settings::Map().compassSize;
+        }
+        float CompassInset(bool a_local, float a_k)
+        {
+            return (a_local ? 34.0f : 12.0f) * a_k + CompassSize(a_local, a_k) * 0.5f;
+        }
+        // the local map: the room the compass takes at its edges (none without it)
+        float CompassRoom(float a_k)
+        {
+            return Settings::Map().compass ? CompassInset(true, a_k) + CompassSize(true, a_k) * 0.6f : 0.0f;
+        }
+
         // the local map's legend: a row an icon kind down its right side, clicked to show / hide that kind
         struct Legend
         {
             float x0 = 0, y0 = 0, x1 = 0, y1 = 0;  // the panel
             float top = 0, row = 0;                 // the first row's top, a row's height
+            float buttons = 0;                      // the buttons' top (show all, hide all)
+            bool  open = true;                      // unfolded (else its title only)
+            // the fold button, in its title's row on the right
+            void FoldBox(float& a_x0, float& a_y0, float& a_x1, float& a_y1) const
+            {
+                const float s = row * 0.85f;
+                a_x1 = x1 - row * 0.3f;
+                a_x0 = a_x1 - s;
+                a_y0 = y0 + (top - y0 - s) * 0.5f;
+                a_y1 = a_y0 + s;
+            }
+            bool Fold(float a_x, float a_y) const
+            {
+                float fx0, fy0, fx1, fy1;
+                FoldBox(fx0, fy0, fx1, fy1);
+                return a_x >= fx0 && a_x <= fx1 && a_y >= fy0 && a_y <= fy1;
+            }
 
             bool In(float a_x, float a_y) const { return a_x >= x0 && a_x <= x1 && a_y >= y0 && a_y <= y1; }
             // the row (icon kind) at a point, -1 = none
             int At(float a_x, float a_y) const
             {
-                if (!In(a_x, a_y) || a_y < top) {
+                if (!open || !In(a_x, a_y) || a_y < top) {
                     return -1;
                 }
                 const int i = static_cast<int>((a_y - top) / row);
                 return i < static_cast<int>(Icons::kCount) ? i : -1;
+            }
+            // the button at a point: 0 show all, 1 hide all, -1 none
+            int Button(float a_x, float a_y) const
+            {
+                if (!open || !In(a_x, a_y) || a_y < buttons || a_y > buttons + row) {
+                    return -1;
+                }
+                return a_x < (x0 + x1) * 0.5f ? 0 : 1;
+            }
+            void ButtonBox(int a_i, float& a_x0, float& a_x1) const
+            {
+                const float mid = (x0 + x1) * 0.5f, gap = row * 0.2f;
+                a_x0 = a_i == 0 ? x0 + gap : mid + gap * 0.5f;
+                a_x1 = a_i == 0 ? mid - gap * 0.5f : x1 - gap;
             }
         };
 
@@ -1196,11 +1544,13 @@ namespace MiniMap
         {
             Legend l;
             l.row = 30.0f * a_k;
-            l.x1 = a_mx1 - 28.0f * a_k;
+            l.x1 = a_mx1 - std::max(28.0f * a_k, CompassRoom(a_k) + 8.0f * a_k);  // clear of the compass's east
+            l.open = Settings::Map().legendOpen;
             l.x0 = l.x1 - 250.0f * a_k;
             l.y0 = a_my0 + 90.0f * a_k;
             l.top = l.y0 + 44.0f * a_k;  // under its title
-            l.y1 = l.top + l.row * static_cast<float>(Icons::kCount) + 10.0f * a_k;
+            l.buttons = l.top + l.row * static_cast<float>(Icons::kCount) + 8.0f * a_k;
+            l.y1 = l.open ? l.buttons + l.row + 10.0f * a_k : l.top - 4.0f * a_k;
             return l;
         }
 
@@ -1233,6 +1583,7 @@ namespace MiniMap
             };
             std::tie(f.px, f.py) = toScreen(a_world.player);
             f.arrowAngle = a_world.heading - local.yaw;  // relative to the map's up (turned)
+            Compass(f, local.centre, toScreen);
             const float inset = 14.0f * k * s.iconSize;
             PlaceMarkers(
                 f, a_world, o.Scale(), toScreen, [&](float x, float y) { return x > f.mx0 && x < f.mx1 && y > f.my0 && y < f.my1 ? 1.0f : 0.0f; },
@@ -1255,6 +1606,7 @@ namespace MiniMap
                 });
             auto view = MeshView(a_world, W, H);
             o.Fill(view);
+            FogLook(view, Settings::Map().fog && Settings::Map().fogLocal);
             view.range = 1.0e9f;  // everything loaded that falls on the picture
             view.slot = 1;
             f.view = view;
@@ -1297,8 +1649,8 @@ namespace MiniMap
         bool                carried = true;
         std::chrono::steady_clock::time_point itemNext{};  // the inventory looked into again then
 
-        // the map may be used now: the setting off, or the item carried (main thread)
-        bool Allowed()
+        // the item the map needs carried: the setting off, or the item in the inventory (main thread)
+        bool ItemCarried()
         {
             const auto& s = Settings::Map();
             if (!s.needItem) {
@@ -1329,6 +1681,120 @@ namespace MiniMap
             const auto it = counts.find(item);
             carried = it != counts.end() && it->second > 0;
             return carried;
+        }
+
+        // Helps To Have A Map (its plugin loaded): the map only with one of its maps for where the character is, as that
+        // mod's own map menu checks it. Its quest's effect on the character says which - Skyrim's map, Solstheim's, or none
+        // helps there; its own settings (its need off, the map held as a shield) as set in it
+        constexpr std::string_view kMapMod = "Helps To Have A Map.esp";
+
+        struct MapMod
+        {
+            bool               looked = false;
+            RE::EffectSetting* skyrim = nullptr;     // where Skyrim's map helps
+            RE::EffectSetting* solstheim = nullptr;  // ...Solstheim's
+            RE::EffectSetting* unmapped = nullptr;   // where no map helps
+            RE::BGSKeyword*    skyrimMap = nullptr;
+            RE::BGSKeyword*    solstheimMap = nullptr;
+            RE::BGSKeyword*    destroyed = nullptr;  // a map past use
+            RE::TESGlobal*     off = nullptr;        // its maps' need off
+            RE::TESGlobal*     held = nullptr;       // the map held (as a shield), not only carried
+        } mapMod;
+
+        const MapMod& MapModForms()
+        {
+            const auto dh = RE::TESDataHandler::GetSingleton();
+            if (mapMod.looked || !dh) {
+                return mapMod;
+            }
+            mapMod.looked = true;
+            if (!dh->LookupModByName(kMapMod)) {
+                return mapMod;
+            }
+            mapMod.skyrim = dh->LookupForm<RE::EffectSetting>(0xD7C, kMapMod);
+            mapMod.solstheim = dh->LookupForm<RE::EffectSetting>(0xD7F, kMapMod);
+            mapMod.unmapped = dh->LookupForm<RE::EffectSetting>(0xD80, kMapMod);
+            mapMod.skyrimMap = dh->LookupForm<RE::BGSKeyword>(0x82B, kMapMod);
+            mapMod.solstheimMap = dh->LookupForm<RE::BGSKeyword>(0x844, kMapMod);
+            mapMod.destroyed = dh->LookupForm<RE::BGSKeyword>(0x831, kMapMod);
+            mapMod.off = dh->LookupForm<RE::TESGlobal>(0xD9E, kMapMod);
+            mapMod.held = dh->LookupForm<RE::TESGlobal>(0x89B, kMapMod);
+            if (!mapMod.skyrim || !mapMod.solstheim || !mapMod.unmapped || !mapMod.skyrimMap || !mapMod.solstheimMap || !mapMod.destroyed || !mapMod.off || !mapMod.held) {
+                logger::warn("{}: its forms not as known (another version?) - its maps not asked for", kMapMod);
+                mapMod = MapMod{ true };
+            } else {
+                logger::info("{}: found - the map may need one of its maps", kMapMod);
+            }
+            return mapMod;
+        }
+
+        bool MapModCheck()
+        {
+            const auto& m = MapModForms();
+            const auto  player = RE::PlayerCharacter::GetSingleton();
+            if (!m.off || !player || m.off->value != 0.0f) {
+                return true;
+            }
+            const RE::BGSKeyword* need = nullptr;
+            const auto            target = player->AsMagicTarget();
+            if (const auto list = target ? target->GetActiveEffectList() : nullptr) {
+                for (const auto effect : *list) {
+                    const auto base = effect ? effect->GetBaseObject() : nullptr;
+                    if (!base || effect->flags.any(RE::ActiveEffect::Flag::kInactive, RE::ActiveEffect::Flag::kDispelled)) {
+                        continue;
+                    }
+                    if (base == m.unmapped) {
+                        return false;
+                    }
+                    if (base == m.skyrim) {
+                        need = m.skyrimMap;
+                    } else if (base == m.solstheim) {
+                        need = m.solstheimMap;
+                    }
+                }
+            }
+            if (!need) {
+                return true;  // its quest's effect not on the character (not started yet): nothing asked
+            }
+            const auto fits = [&](RE::TESBoundObject& a_obj) {
+                const auto kw = a_obj.As<RE::BGSKeywordForm>();
+                return kw && kw->HasKeyword(need) && !kw->HasKeyword(m.destroyed);
+            };
+            if (m.held->value != 0.0f) {
+                const auto shield = player->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kShield);
+                return shield && fits(*shield);
+            }
+            for (const auto& [obj, count] : player->GetInventoryCounts(fits)) {
+                if (count > 0) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        bool                                  mapModOk = true;
+        std::chrono::steady_clock::time_point mapModNext{};  // looked at again then
+
+        bool MapModAllows()
+        {
+            if (!Settings::Map().needMapMod) {
+                mapModOk = true;
+                mapModNext = {};
+                return true;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= mapModNext) {
+                mapModNext = now + std::chrono::milliseconds(500);
+                mapModOk = MapModCheck();
+            }
+            return mapModOk;
+        }
+
+        // the map may be used now: the item it needs carried (or none needed), Helps To Have A Map's map too (main thread)
+        bool Allowed()
+        {
+            const bool carries = ItemCarried();
+            return MapModAllows() && carries;
         }
 
         bool vanillaHidden = false;  // the game's local map clip hidden by us
@@ -1410,6 +1876,26 @@ namespace MiniMap
             look(a_f.icons, false);
             look(a_f.quests, true);
             if (a_f.hover < 0) {
+                // a beam under the cursor (within a few px of it): what it leads to
+                float closest = 8.0f * a_k;
+                for (std::size_t b = 0; b < a_f.beams.size(); ++b) {
+                    const auto& pts = a_f.beams[b];
+                    for (std::size_t i = 1; i < pts.size(); ++i) {
+                        const float ax = pts[i - 1].first, ay = pts[i - 1].second, dx = pts[i].first - ax, dy = pts[i].second - ay;
+                        const float len = dx * dx + dy * dy;
+                        const float t = len > 0.0f ? std::clamp(((a_x - ax) * dx + (a_y - ay) * dy) / len, 0.0f, 1.0f) : 0.0f;
+                        const float d = std::hypot(ax + dx * t - a_x, ay + dy * t - a_y);
+                        if (d < closest) {
+                            closest = d;
+                            a_f.hoverBeam = static_cast<int>(b);
+                        }
+                    }
+                }
+                if (a_f.hoverBeam >= 0) {
+                    a_f.hoverName = a_f.beamNames[a_f.hoverBeam];
+                    a_f.hoverX = a_x;
+                    a_f.hoverY = a_y;
+                }
                 return;
             }
             if (a_f.hoverQuest) {
@@ -1424,8 +1910,24 @@ namespace MiniMap
             }
         }
 
+        void ShowGameCursor(bool a_show)
+        {
+            if (cursorHidden != a_show) {
+                return;
+            }
+            const auto ui = RE::UI::GetSingleton();
+            const auto menu = ui ? ui->GetMenu(RE::CursorMenu::MENU_NAME) : nullptr;
+            if (menu && menu->uiMovie) {
+                menu->uiMovie->SetVisible(a_show);
+                cursorHidden = !a_show;
+            } else if (a_show) {
+                cursorHidden = false;
+            }
+        }
+
         void CloseLocal()
         {
+            ShowGameCursor(true);
             local.open = false;
             overWorld = false;
             openAsked = false;
@@ -1456,12 +1958,26 @@ namespace MiniMap
             delegate.Invoke("call", nullptr, args, 2);
         }
 
+        // SkyUI's location finder (F, or its button): it switches the map menu to its local map and shows the finder
+        // instead of the map (LocalMap.as: _bRequestFindLoc until shown, then _state 2, STATE_FINDLOCATION) - not ours
+        bool Finding(RE::GFxValue& a_localMap)
+        {
+            if (!a_localMap.IsObject()) {
+                return false;
+            }
+            RE::GFxValue v;
+            if (a_localMap.GetMember("_bRequestFindLoc", &v) && v.IsBool() && v.GetBool()) {
+                return true;
+            }
+            return a_localMap.GetMember("_state", &v) && v.IsNumber() && v.GetNumber() == 2.0;
+        }
+
         void UpdateMapMenu(RE::MapMenu* a_menu)
         {
             const auto& s = Settings::Map();
             const auto  data = a_menu ? a_menu->GetRuntimeData() : nullptr;
             const bool  ours = s.enabled && s.localMap && Allowed();  // without the item the map needs: the game's own
-            const bool  showing = ours && data && data->localMapMenu.GetRuntimeData().showingMap;
+            const bool  showing = ours && data && data->localMapMenu.GetRuntimeData().showingMap && !Finding(data->localMapMenu.GetRuntimeData().localMapMovie);
             // the game's own local map not shown at all while ours replaces it (back when ours is switched off)
             if (data) {
                 auto& movie = data->localMapMenu.GetRuntimeData().localMapMovie;
@@ -1504,6 +2020,13 @@ namespace MiniMap
             }
         }
 
+        // the local map zoomed out at most this far (world units from its middle to its top): outside, what the game keeps
+        // loaded round the character and its distant land fill it; further out the land runs out
+        float LocalMaxRange(bool a_inside)
+        {
+            return a_inside ? 20000.0f : 12000.0f;
+        }
+
         // main thread, every frame of our local map menu
         void UpdateLocal()
         {
@@ -1527,7 +2050,7 @@ namespace MiniMap
                 // opened: on the character, as wide as the minimap shows twice
                 local.open = true;
                 local.centre = player->GetPosition();
-                local.range = std::clamp(MinimapRange(inside) * 2.0f, 600.0f, 16000.0f);
+                local.range = std::clamp(MinimapRange(inside, false) * 2.0f, 600.0f, LocalMaxRange(inside));
                 local.yaw = 0.0f;
                 local.tilt = s.minimapTilt * kDeg;
                 turnHeld = viewReset = false;
@@ -1591,20 +2114,80 @@ namespace MiniMap
             const auto legend = LegendOf(x1, y0, h / 1080.0f);
             if (mouseClicked && legend.In(cx, cy)) {
                 legendHeld = true;
+                if (legend.Fold(cx, cy)) {
+                    Settings::Map().legendOpen = !Settings::Map().legendOpen;
+                    Settings::Save();
+                    RE::PlaySound("UIMenuFocus");
+                }
                 if (const int i = legend.At(cx, cy); i >= 0) {
                     auto& show = Settings::Map().show[i];
                     show = !show;
                     Settings::Save();
                     RE::PlaySound("UIMenuFocus");
                 }
+                if (const int b = legend.Button(cx, cy); b >= 0) {
+                    Settings::Map().show.fill(b == 0);
+                    Settings::Save();
+                    RE::PlaySound("UIMenuFocus");
+                }
             }
             mouseClicked = false;
             legendHeld = legendHeld && mouseHeld;
+            {
+                // the gamepad: the d-pad walks the legend, A presses what is picked; the game's cursor away meanwhile
+                ShowGameCursor(!padInUse);
+                const int nav = padNav.exchange(0);
+                const int last = legend.open ? static_cast<int>(Icons::kCount) + 1 : 0;
+                legendPick = std::clamp(legendPick, 0, last);
+                if (nav & 1) {
+                    legendPick = std::max(legendPick - 1, 0);
+                }
+                if (nav & 2) {
+                    legendPick = std::min(legendPick + 1, last);
+                }
+                if (nav & 4) {
+                    legendCol = 0;
+                }
+                if (nav & 8) {
+                    legendCol = 1;
+                }
+                if (nav & 15) {
+                    RE::PlaySound("UIMenuFocus");
+                }
+                if (nav & 16) {
+                    if (legendPick == 0) {
+                        Settings::Map().legendOpen = !Settings::Map().legendOpen;
+                    } else if (legendPick <= static_cast<int>(Icons::kCount)) {
+                        auto& show = Settings::Map().show[legendPick - 1];
+                        show = !show;
+                    } else {
+                        Settings::Map().show.fill(legendCol == 0);
+                    }
+                    Settings::Save();
+                    RE::PlaySound("UIMenuFocus");
+                }
+                // the picked one's middle: lit as the mouse's would be
+                const auto panel = LegendOf(x1, y0, h / 1080.0f);
+                if (legendPick == 0) {
+                    float fx0, fy0, fx1, fy1;
+                    panel.FoldBox(fx0, fy0, fx1, fy1);
+                    padPointX = (fx0 + fx1) * 0.5f;
+                    padPointY = (fy0 + fy1) * 0.5f;
+                } else if (legendPick <= static_cast<int>(Icons::kCount)) {
+                    padPointX = (panel.x0 + panel.x1) * 0.5f;
+                    padPointY = panel.top + panel.row * (static_cast<float>(legendPick - 1) + 0.5f);
+                } else {
+                    float bx0, bx1;
+                    panel.ButtonBox(legendCol, bx0, bx1);
+                    padPointX = (bx0 + bx1) * 0.5f;
+                    padPointY = panel.buttons + panel.row * 0.5f;
+                }
+            }
             // the wheel zooms (up: in) towards the cursor: the point under it stays where it is
             if (wheel != 0) {
                 local.centring = false;  // zoomed: the map is the player's again
                 const float before = (y1 - y0) * 0.5f / local.range;
-                local.range = std::clamp(local.range * std::pow(0.85f, static_cast<float>(wheel)), 300.0f, 20000.0f);
+                local.range = std::clamp(local.range * std::pow(0.85f, static_cast<float>(wheel)), 300.0f, LocalMaxRange(inside));
                 const float after = (y1 - y0) * 0.5f / local.range;
                 if (cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1) {
                     const float ox = cx - (x0 + x1) * 0.5f, oy = cy - (y0 + y1) * 0.5f;
@@ -1626,10 +2209,13 @@ namespace MiniMap
             };
             learn(local.gainX, cdx, rawX);
             learn(local.gainY, cdy, rawY);
-            // the rotate key held: the mouse (or the left stick) turns the map round its middle and tilts it, nothing moves
-            const bool turning = turnHeld && ((s.rotateKey != 0 && Held(s.rotateKey) && (s.rotateMod == 0 || Held(s.rotateMod))) ||
-                                                 (s.rotateKeyPad != 0 && Held(s.rotateKeyPad) && (s.rotateModPad == 0 || Held(s.rotateModPad))));
+            // the rotate key held: the mouse (or the right stick, alone) turns the map round its middle and tilts it, nothing moves
             const auto stick = [](float a_v) { return std::abs(a_v) > 0.15f ? a_v : 0.0f; };
+            const bool keyTurning = turnHeld && ((s.rotateKey != 0 && Held(s.rotateKey) && (s.rotateMod == 0 || Held(s.rotateMod))) ||
+                                                    (s.rotateKeyPad != 0 && Held(s.rotateKeyPad) && (s.rotateModPad == 0 || Held(s.rotateModPad))));
+            // the gamepad's right stick turns it (no key held), as the mouse does with its key
+            const bool padTurning = stick(rightStick.first) != 0.0f || stick(rightStick.second) != 0.0f;
+            const bool turning = keyTurning || padTurning;
             // turned round and round; tilted from the ground's edge over the top to its other edge (never from below:
             // under the ground nothing reads)
             constexpr float kTiltMin = 3.0f * kDeg, kTiltMax = 177.0f * kDeg;
@@ -1647,8 +2233,8 @@ namespace MiniMap
                 // by the mouse's own movement (not the cursor's: that may stand at the screen's edge meanwhile); past the top
                 // (seen upside down) left and right swap on the screen - turned the other way they keep their feel
                 const float over = std::cos(local.tilt) < 0.0f ? -1.0f : 1.0f;
-                const float yaw = (rawX * 0.003f + stick(leftStick.first) * 1.5f * dt) * rate * over * (s.rotateInvertX ? -1.0f : 1.0f);
-                const float tilt = (-rawY * 0.0025f + stick(leftStick.second) * 1.0f * dt) * rate * (s.rotateInvertY ? -1.0f : 1.0f);
+                const float yaw = ((keyTurning ? rawX * 0.003f : 0.0f) + stick(rightStick.first) * 1.5f * dt) * rate * over * (s.rotateInvertX ? -1.0f : 1.0f);
+                const float tilt = ((keyTurning ? -rawY * 0.0025f : 0.0f) + stick(rightStick.second) * 1.0f * dt) * rate * (s.rotateInvertY ? -1.0f : 1.0f);
                 local.returning = false;
                 turn(yaw, tilt);
                 // how fast it turns, smoothed over a few frames: what it keeps spinning at when let go
@@ -1679,22 +2265,22 @@ namespace MiniMap
             const float keyStep = (y1 - y0) * 0.9f * dt;
             dx += (panKeys[1] ? keyStep : 0.0f) - (panKeys[3] ? keyStep : 0.0f);
             dy += (panKeys[0] ? keyStep : 0.0f) - (panKeys[2] ? keyStep : 0.0f);
-            // the gamepad: the left stick moves it (turns it, the rotate key held), the right one zooms (up: in)
-            if (!turning) {
-                dx -= stick(leftStick.first) * keyStep * 1.2f;
-                dy += stick(leftStick.second) * keyStep * 1.2f;
-            }
-            if (const float zoom = stick(rightStick.second); zoom != 0.0f) {
-                local.range = std::clamp(local.range * std::pow(0.85f, zoom * 8.0f * dt), 300.0f, 20000.0f);
+            // the gamepad: the left stick moves it, the triggers zoom (RT in, LT out)
+            dx -= stick(leftStick.first) * keyStep * 1.2f;
+            dy += stick(leftStick.second) * keyStep * 1.2f;
+            if (const float zoom = (Held(kPadRT) ? 1.0f : 0.0f) - (Held(kPadLT) ? 1.0f : 0.0f); zoom != 0.0f) {
+                local.range = std::clamp(local.range * std::pow(0.85f, zoom * 8.0f * dt), 300.0f, LocalMaxRange(inside));
             }
             if (dx != 0.0f || dy != 0.0f) {
                 local.centring = false;  // moved: the map is the player's again
                 const float across = -dx / scale, along = dy / (scale * st);
                 local.centre.x += rx * across + fx * along;
                 local.centre.y += ry * across + fy * along;
-                // never farther from the character than the loaded world reaches
+            }
+            {
+                // never farther from the character than the map zoomed out all the way shows (moved, or zoomed towards the cursor)
                 const auto  p = player->GetPosition();
-                const float reach = inside ? 20000.0f : kLocalReach;
+                const float reach = (inside ? 20000.0f : kLocalReach) + (LocalMaxRange(inside) - local.range) * 1.2f;
                 local.centre.x = std::clamp(local.centre.x, p.x - reach, p.x + reach);
                 local.centre.y = std::clamp(local.centre.y, p.y - reach, p.y + reach);
             }
@@ -1703,7 +2289,12 @@ namespace MiniMap
             local.lastY = cy;
             const auto world = TakeWorld(player, true);
             auto       next = BuildLocal(player, world, w, h);
-            if (cx >= next.mx0 && cx <= next.mx1 && cy >= next.my0 && cy <= next.my1 && !mouseHeld && !legend.In(cx, cy)) {
+            if (padInUse) {
+                next.cursorX = padPointX;
+                next.cursorY = padPointY;
+                next.padCursor = true;
+            }
+            if (!padInUse && cx >= next.mx0 && cx <= next.mx1 && cy >= next.my0 && cy <= next.my1 && !mouseHeld && !legend.In(cx, cy)) {
                 Hover(next, cx, cy, h / 1080.0f);
             }
             std::scoped_lock lock(frameLock);
@@ -1713,7 +2304,18 @@ namespace MiniMap
         // main thread, once a frame after the camera is final (the HUD advances after the camera update)
         void Update()
         {
-            const auto  start = std::chrono::steady_clock::now();
+            const auto start = std::chrono::steady_clock::now();
+            // the detailed log / the performance panel: what the whole update took, whichever way it ends
+            struct Noted
+            {
+                std::chrono::steady_clock::time_point from;
+                ~Noted()
+                {
+                    if (Settings::Map().debugLog) {
+                        MapMesh::NoteFrame(static_cast<float>(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - from).count()));
+                    }
+                }
+            } noted{ start };
             // a zoomed range written once the zooming stopped
             if (saveIn > 0.0f && (saveIn -= std::clamp(RE::GetSecondsSinceLastFrame(), 0.0f, 0.1f)) <= 0.0f) {
                 Settings::Save();
@@ -1721,6 +2323,10 @@ namespace MiniMap
             const auto  player = RE::PlayerCharacter::GetSingleton();
             const auto& s = Settings::Map();
             const float w = screenW, h = screenH;
+            // the fog of war: what is round the character seen (kept whether the map shows or not)
+            if (player && player->Get3D()) {
+                Fog::Update(player, std::clamp(RE::GetSecondsSinceLastFrame(), 0.0f, 0.1f));
+            }
             if (local.open && !LocalMenuOpen()) {
                 CloseLocal();  // the map menu is closed
             }
@@ -1744,6 +2350,7 @@ namespace MiniMap
             const auto  here = player->GetParentCell();
             const bool  inside = here->IsInteriorCell();
             const float dt = std::clamp(RE::GetSecondsSinceLastFrame(), 0.0f, 0.1f);
+            Pace(player, dt);
             // the geometry: as far as the minimap's square shows, or (the local map on) all the game keeps loaded
             const float reach = MinimapReach(inside);
             const float harvest = s.localMap && !inside ? std::max(reach, kLocalReach) : reach;
@@ -1773,9 +2380,6 @@ namespace MiniMap
             {
                 std::scoped_lock lock(frameLock);
                 frame = std::move(next);
-            }
-            if (s.debugLog) {
-                MapMesh::NoteFrame(static_cast<float>(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count()));
             }
         }
 
@@ -1834,14 +2438,14 @@ namespace MiniMap
 
         // the beam: along its way from the character to the quest target, a soft glow with a bright core and a light
         // running along it
-        void DrawBeam(Canvas& a_c, const std::vector<P2>& a_pts, float a_k, float a_alpha)
+        void DrawBeam(Canvas& a_c, const std::vector<P2>& a_pts, float a_k, float a_alpha, const float* a_colour, float a_wider = 1.0f)
         {
             const auto& look = Settings::Map().look;
             a_alpha *= look.beamOpacity;
             if (a_alpha <= 0.0f) {
                 return;
             }
-            const float wide = look.beamWidth;
+            const float wide = look.beamWidth * a_wider;
             const auto& pts = a_pts;
             // its length along the way, and where it starts (past the character's badge) and ends (short of the
             // target's icon)
@@ -1871,7 +2475,7 @@ namespace MiniMap
                 }
             }
             legs.push_back(point(to));
-            const auto glow = Faded(Mixed(look.beamColor, 0.0f, 60), a_alpha), core = Faded(Mixed(look.beamColor, 0.45f, 215), a_alpha);
+            const auto glow = Faded(Mixed(a_colour, 0.0f, 60), a_alpha), core = Faded(Mixed(a_colour, 0.45f, 215), a_alpha);
             for (std::size_t i = 1; i < legs.size(); ++i) {
                 a_c.Line(legs[i - 1], legs[i], glow, 8.0f * a_k * wide);
             }
@@ -1891,7 +2495,7 @@ namespace MiniMap
             for (float d = from + std::fmod(Seconds() * 55.0f * a_k, step); d < to; d += step) {
                 // brightest in the middle of the beam, fading at its ends
                 const float t = std::min(d - from, to - d) / (12.0f * a_k);
-                a_c.Disc(point(d), 2.3f * a_k * wide, Faded(Mixed(look.beamColor, 0.8f, 235), a_alpha * std::clamp(t, 0.0f, 1.0f)));
+                a_c.Disc(point(d), 2.3f * a_k * wide, Faded(Mixed(a_colour, 0.8f, 235), a_alpha * std::clamp(t, 0.0f, 1.0f)));
             }
         }
 
@@ -1900,8 +2504,9 @@ namespace MiniMap
         {
             const auto& s = Settings::Map();
             const float a = a_f.alpha;
-            for (const auto& beam : a_f.beams) {
-                DrawBeam(a_c, beam, a_k, a);
+            for (std::size_t b = 0; b < a_f.beams.size(); ++b) {
+                const float* colour = b < a_f.beamColours.size() ? a_f.beamColours[b].data() : s.look.beamColor;
+                DrawBeam(a_c, a_f.beams[b], a_k, a, colour, static_cast<int>(b) == a_f.hoverBeam ? 1.5f : 1.0f);
             }
             const float size = 16.0f * a_k * s.iconSize;
             const float icons = a * s.look.iconOpacity;  // the icons as opaque as set (the character's and the one under the cursor in full)
@@ -1975,7 +2580,20 @@ namespace MiniMap
             const auto& show = Settings::Map().show;
             const auto  l = LegendOf(a_f.mx1, a_f.my0, a_k);
             a_c.Fill({ l.x0, l.y0 }, { l.x1, l.y1 }, vanilla ? Rgb(20, 19, 16, 215) : Rgb(10, 12, 18, 215));
-            a_c.Outline({ l.x0, l.y0 }, { l.x1, l.y1 }, vanilla ? Rgb(140, 138, 130) : Rgb(150, 120, 75), 1.0f * a_k);
+            {
+                // the fold button: a minus unfolded, a plus folded
+                float fx0, fy0, fx1, fy1;
+                l.FoldBox(fx0, fy0, fx1, fy1);
+                a_c.Fill({ fx0, fy0 }, { fx1, fy1 }, l.Fold(a_f.cursorX, a_f.cursorY) ? Rgb(255, 255, 255, 50) : Rgb(255, 255, 255, 24));
+                const float mx = (fx0 + fx1) * 0.5f, my = (fy0 + fy1) * 0.5f, arm = (fx1 - fx0) * 0.28f;
+                a_c.Line({ mx - arm, my }, { mx + arm, my }, Rgb(236, 232, 220), 2.0f * a_k);
+                if (!l.open) {
+                    a_c.Line({ mx, my - arm }, { mx, my + arm }, Rgb(236, 232, 220), 2.0f * a_k);
+                }
+            }
+            if (!l.open) {
+                return;
+            }
             const int under = l.At(a_f.cursorX, a_f.cursorY);
             for (std::size_t i = 0; i < Icons::kCount; ++i) {
                 const float y = l.top + l.row * static_cast<float>(i);
@@ -1983,6 +2601,12 @@ namespace MiniMap
                     a_c.Fill({ l.x0 + 3.0f * a_k, y }, { l.x1 - 3.0f * a_k, y + l.row }, Rgb(255, 255, 255, 30));
                 }
                 Icons::Draw(a_c, static_cast<Icons::Kind>(i), l.x0 + 24.0f * a_k, y + l.row * 0.5f, 22.0f * a_k, show[i] ? 1.0f : 0.3f);
+            }
+            const int pressed = l.Button(a_f.cursorX, a_f.cursorY);
+            for (int b = 0; b < 2; ++b) {
+                float bx0, bx1;
+                l.ButtonBox(b, bx0, bx1);
+                a_c.Fill({ bx0, l.buttons }, { bx1, l.buttons + l.row }, b == pressed ? Rgb(255, 255, 255, 50) : Rgb(255, 255, 255, 24));
             }
         }
 
@@ -1998,16 +2622,6 @@ namespace MiniMap
                 }
             }
             DrawMarkers(a_c, a_f, a_k);
-            const float in = 6.0f * a_k;
-            const float x0 = a_f.mx0 + in, y0 = a_f.my0 + in, x1 = a_f.mx1 - in, y1 = a_f.my1 - in;
-            if (vanilla) {
-                const float out = 4.0f * a_k;
-                a_c.Outline({ x0 - out * 0.5f, y0 - out * 0.5f }, { x1 + out * 0.5f, y1 + out * 0.5f }, Rgb(18, 17, 15, 225), out);
-                a_c.Outline({ x0 - out, y0 - out }, { x1 + out, y1 + out }, Rgb(214, 212, 204), 2.0f * a_k);
-                a_c.Outline({ x0, y0 }, { x1, y1 }, Rgb(140, 138, 130), 1.0f * a_k);
-            } else {
-                a_c.Outline({ x0, y0 }, { x1, y1 }, Rgb(150, 120, 75), 1.5f * a_k);
-            }
             DrawLegend(a_c, a_f, a_k);
         }
 
@@ -2025,9 +2639,79 @@ namespace MiniMap
             const float size = 30.0f * a_k;
             const auto  ts = ImGui::CalcTextSize(a_f.title.c_str());
             const float kk = base > 0.0f ? size / base : 1.0f;
-            const V2    at{ (a_f.mx0 + a_f.mx1) * 0.5f - ts.x * kk * 0.5f, a_f.my0 + 18.0f * a_k };
+            const V2    at{ (a_f.mx0 + a_f.mx1) * 0.5f - ts.x * kk * 0.5f, a_f.my0 + std::max(18.0f * a_k, CompassRoom(a_k) + 4.0f * a_k) };  // under the compass's letter
             D::AddText(a_dl, font, size, V2{ at.x + 2.0f * a_k, at.y + 2.0f * a_k }, Rgb(0, 0, 0, 220), a_f.title.c_str());
             D::AddText(a_dl, font, size, at, vanilla ? Rgb(236, 232, 220) : Rgb(225, 230, 240), a_f.title.c_str());
+        }
+
+        // N, E, S, W just inside the rim, where those ways lie on the picture (north red); the letters as the language has them
+        void DrawCompass(ImGui::ImDrawList* a_dl, const Frame& a_f, float a_k)
+        {
+            using V2 = ImGui::ImVec2;
+            namespace D = ImGui::ImDrawListManager;
+            const auto font = ImGui::GetFont();
+            if (!Settings::Map().compass || !font) {
+                return;
+            }
+            std::vector<std::string> letters;
+            {
+                std::string_view all = Lang::T(Lang::S::CompassLetters);
+                while (!all.empty()) {
+                    const auto gap = all.find(' ');
+                    if (gap != 0) {
+                        letters.emplace_back(all.substr(0, gap));
+                    }
+                    all = gap == std::string_view::npos ? std::string_view{} : all.substr(gap + 1);
+                }
+                if (letters.size() != 4) {
+                    letters = { "N", "E", "S", "W" };
+                }
+            }
+            const float base = ImGui::GetFontSize();
+            const float size = CompassSize(a_f.local, a_k);
+            const float kk = base > 0.0f ? size / base : 1.0f;
+            const float inset = CompassInset(a_f.local, a_k);
+            // the local map: above the keys' hints at the bottom
+            const float bottom = a_f.local ? 44.0f * a_k : 0.0f;
+            const V2    centre{ (a_f.mx0 + a_f.mx1) * 0.5f, (a_f.my0 + a_f.my1 - bottom) * 0.5f };
+            const float hw = (a_f.mx1 - a_f.mx0) * 0.5f - inset, hh = (a_f.my1 - a_f.my0 - bottom) * 0.5f - inset;
+            const float alpha = a_f.alpha * (a_f.local ? 1.0f : Settings::Map().minimapOpacity);
+            for (int i = 0; i < 4; ++i) {
+                const auto [ux, uy] = a_f.compass[static_cast<std::size_t>(i)];
+                if (ux == 0.0f && uy == 0.0f) {
+                    continue;
+                }
+                float t;
+                if (a_f.round) {
+                    t = std::min(hw, hh);
+                } else {
+                    t = std::min(std::abs(ux) > 1e-4f ? hw / std::abs(ux) : FLT_MAX, std::abs(uy) > 1e-4f ? hh / std::abs(uy) : FLT_MAX);
+                    if (!a_f.local) {
+                        t = std::min(t, std::min(hw, hh) * 1.2f);  // the rounded corners: not out past them
+                    }
+                }
+                const auto& text = letters[static_cast<std::size_t>(i)];
+                const auto  ts = ImGui::CalcTextSize(text.c_str());
+                const V2    at{ centre.x + ux * t - ts.x * kk * 0.5f, centre.y + uy * t - ts.y * kk * 0.5f };
+                const auto  colour = i == 0 ? Rgb(235, 85, 60) : Rgb(236, 232, 220);
+                D::AddText(a_dl, font, size, V2{ at.x + 1.5f * a_k, at.y + 1.5f * a_k }, Faded(Rgb(0, 0, 0, 220), alpha), text.c_str());
+                D::AddText(a_dl, font, size, at, Faded(colour, alpha), text.c_str());
+            }
+        }
+
+        // the gamepad's key for the game's map (Quick Map): what goes on to the world map from ours
+        std::string PadWorldKey()
+        {
+            const auto events = RE::UserEvents::GetSingleton();
+            const auto map = RE::ControlMap::GetSingleton();
+            const auto id = events && map ? map->GetMappedKey(events->quickMap, RE::INPUT_DEVICE::kGamepad) : 0;
+            constexpr std::uint32_t kButtons[] = { 0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0020, 0x0040, 0x0080, 0x0100, 0x0200, 0x1000, 0x2000, 0x4000, 0x8000, 0x0009, 0x000A };
+            for (std::uint32_t i = 0; i < std::size(kButtons); ++i) {
+                if (id == kButtons[i]) {
+                    return Settings::BindName(266 + i, 0);
+                }
+            }
+            return "Back";
         }
 
         // the keys, at the bottom: on to the world map, closed
@@ -2041,7 +2725,9 @@ namespace MiniMap
             }
             const auto& s = Settings::Map();
             const auto  turn = s.rotateKey != 0 ? Settings::BindName(s.rotateKey, s.rotateMod) : s.rotateKeyPad != 0 ? Settings::BindName(s.rotateKeyPad, s.rotateModPad) : std::string();
-            const auto  text = turn.empty() ? std::format("M  {}        Esc  {}", Lang::T(Lang::S::HintWorld), Lang::T(Lang::S::HintClose)) :
+            const auto  text = padInUse ? std::format("{}  {}        LS  {}        RS  {}        LT / RT  {}        R3  {}        B  {}", PadWorldKey(), Lang::T(Lang::S::HintWorld),
+                                                         Lang::T(Lang::S::HintMove), Lang::T(Lang::S::HintRotate), Lang::T(Lang::S::HintZoom), Lang::T(Lang::S::HintReset), Lang::T(Lang::S::HintClose)) :
+                              turn.empty() ? std::format("M  {}        Esc  {}", Lang::T(Lang::S::HintWorld), Lang::T(Lang::S::HintClose)) :
                                               std::format("M  {}        {}  {}        R  {}        Esc  {}", Lang::T(Lang::S::HintWorld), turn, Lang::T(Lang::S::HintRotate), Lang::T(Lang::S::HintReset), Lang::T(Lang::S::HintClose));
             const float base = ImGui::GetFontSize();
             const float size = 24.0f * a_k;
@@ -2050,6 +2736,63 @@ namespace MiniMap
             const V2    at{ (a_f.mx0 + a_f.mx1) * 0.5f - ts.x * kk * 0.5f, a_f.my1 - 48.0f * a_k };
             D::AddText(a_dl, font, size, V2{ at.x + 2.0f * a_k, at.y + 2.0f * a_k }, Rgb(0, 0, 0, 200), text.c_str());
             D::AddText(a_dl, font, size, at, Rgb(225, 220, 205, 230), text.c_str());
+        }
+
+        // the performance panel (the detailed log on): what the map costs, a second's worth, in the corner the minimap
+        // leaves free
+        void DrawPerf(ImGui::ImDrawList* a_dl, float a_k)
+        {
+            using V2 = ImGui::ImVec2;
+            namespace D = ImGui::ImDrawListManager;
+            const auto& s = Settings::Map();
+            const auto  font = ImGui::GetFont();
+            const auto  st = MapMesh::Live();
+            if (!s.debugLog || !font || !st.valid) {
+                return;
+            }
+            std::vector<std::pair<std::string, ImGui::ImU32>> lines;
+            const auto  plain = Rgb(225, 222, 210), dim = Rgb(150, 148, 140), head = Rgb(240, 200, 110);
+            const auto  warn = [&](float a_v, float a_bad) { return a_v >= a_bad ? Rgb(240, 110, 90) : plain; };
+            lines.emplace_back("Detailed MiniMap - performance", head);
+            lines.emplace_back(std::format("{:.0f} fps, {:.1f} ms a frame", st.fps, st.frameMs), plain);
+            lines.emplace_back("main thread", dim);
+            lines.emplace_back(std::format("  map update   {:.2f} ms  (max {:.2f})", st.updateMs, st.updateMax), warn(st.updateMax, 4.0f));
+            lines.emplace_back(std::format("  gathering    {:.2f} ms  (max {:.2f})", st.workMs, st.workMax), warn(st.workMax, 2.0f));
+            lines.emplace_back("render thread", dim);
+            lines.emplace_back(std::format("  picture      {:.2f} ms  (max {:.2f})", st.renderMs, st.renderMax), warn(st.renderMax, 3.0f));
+            lines.emplace_back(std::format("  drawn {} /s, reused {} /s", st.redraws, st.reused), plain);
+            lines.emplace_back(std::format("  last: {} instances, {}k triangles, {} draws", st.drawnInstances, st.drawnTriangles / 1000, st.drawCalls), plain);
+            lines.emplace_back("memory", dim);
+            lines.emplace_back(std::format("  GPU models   {:.1f} MB", st.gpuMB), plain);
+            lines.emplace_back(std::format("  GPU pictures {:.1f} MB", st.picturesMB), plain);
+            lines.emplace_back(std::format("  RAM          {:.1f} MB", st.cpuMB), plain);
+            lines.emplace_back("map", dim);
+            lines.emplace_back(std::format("  {} references, {} placed, {}k triangles", st.refs, st.placed, st.placedTriangles / 1000), plain);
+            lines.emplace_back(std::format("  {} models: {} shared, {} on GPU", st.models, st.shared, st.onGpu), plain);
+            lines.emplace_back(std::format("  being read {}, failed {}", st.decoding, st.failed), plain);
+            lines.emplace_back(std::format("  queues: decode {}, GPU reads {}, events {}", st.decodeQueue, st.gpuReads, st.events), plain);
+            lines.emplace_back(std::format("  a second: {} refs, {} models, {} uploads, {} sweeps", st.refsTaken, st.modelsMade, st.uploads, st.passes), plain);
+
+            const float size = 17.0f * a_k;
+            const float base = ImGui::GetFontSize();
+            const float kk = base > 0.0f ? size / base : 1.0f;
+            float       width = 0.0f;
+            for (const auto& [text, col] : lines) {
+                width = std::max(width, ImGui::CalcTextSize(text.c_str()).x * kk);
+            }
+            const float row = size * 1.15f, pad = 10.0f * a_k;
+            const float w = width + pad * 2.0f, h = row * static_cast<float>(lines.size()) + pad * 2.0f;
+            // the minimap's side of the screen (top or bottom), the other corner
+            const bool  right = (s.anchor & 1) == 0, bottom = (s.anchor & 2) != 0;
+            const float x0 = right ? screenW - w - 16.0f * a_k : 16.0f * a_k;
+            const float y0 = bottom ? screenH - h - 16.0f * a_k : 16.0f * a_k;
+            D::AddRectFilled(a_dl, V2{ x0, y0 }, V2{ x0 + w, y0 + h }, Rgb(12, 12, 14, 205), 6.0f * a_k, 0);
+            D::AddRect(a_dl, V2{ x0, y0 }, V2{ x0 + w, y0 + h }, Rgb(120, 110, 90, 200), 6.0f * a_k, 0, 1.0f * a_k);
+            float y = y0 + pad;
+            for (const auto& [text, col] : lines) {
+                D::AddText(a_dl, font, size, V2{ x0 + pad, y }, col, text.c_str());
+                y += row;
+            }
         }
 
         // the legend's title and names (its panel and icons: DrawLegend)
@@ -2070,10 +2813,25 @@ namespace MiniMap
                 D::AddText(a_dl, font, a_size, V2{ a_x + 1.5f * a_k, y + 1.5f * a_k }, Rgb(0, 0, 0, 200), a_text);
                 D::AddText(a_dl, font, a_size, V2{ a_x, y }, a_col, a_text);
             };
-            text(Lang::T(Lang::S::Legend), l.x0 + 14.0f * a_k, l.y0 + 24.0f * a_k, 24.0f * a_k, Rgb(236, 232, 220));
+            {
+                // level with the fold button (the glyphs sit low in their line: a little up)
+                float fx0, fy0, fx1, fy1;
+                l.FoldBox(fx0, fy0, fx1, fy1);
+                text(Lang::T(Lang::S::Legend), l.x0 + 14.0f * a_k, (fy0 + fy1) * 0.5f - 3.0f * a_k, 24.0f * a_k, Rgb(236, 232, 220));
+            }
+            if (!l.open) {
+                return;
+            }
             for (std::size_t i = 0; i < Icons::kCount; ++i) {
                 const float cy = l.top + l.row * (static_cast<float>(i) + 0.5f);
                 text(Icons::Name(static_cast<Icons::Kind>(i)), l.x0 + 46.0f * a_k, cy, 21.0f * a_k, show[i] ? Rgb(236, 232, 220) : Rgb(130, 126, 118));
+            }
+            for (int b = 0; b < 2; ++b) {
+                float bx0, bx1;
+                l.ButtonBox(b, bx0, bx1);
+                const char* label = Lang::T(b == 0 ? Lang::S::ShowAll : Lang::S::HideAll);
+                const float kk = base > 0.0f ? 19.0f * a_k / base : 1.0f;
+                text(label, (bx0 + bx1) * 0.5f - ImGui::CalcTextSize(label).x * kk * 0.5f, l.buttons + l.row * 0.5f, 19.0f * a_k, Rgb(236, 232, 220));
             }
         }
 
@@ -2084,15 +2842,16 @@ namespace MiniMap
             namespace D = ImGui::ImDrawListManager;
             const auto  font = ImGui::GetFont();
             const auto& list = a_f.hoverQuest ? a_f.quests : a_f.icons;
-            if (a_f.hoverName.empty() || !font || a_f.hover < 0 || static_cast<std::size_t>(a_f.hover) >= list.size()) {
+            const bool  beam = a_f.hover < 0 && a_f.hoverBeam >= 0;
+            if (a_f.hoverName.empty() || !font || (!beam && (a_f.hover < 0 || static_cast<std::size_t>(a_f.hover) >= list.size()))) {
                 return;
             }
-            const auto& i = list[a_f.hover];
+            const float ix = beam ? a_f.hoverX + 6.0f * a_k : list[a_f.hover].x, iy = beam ? a_f.hoverY - 14.0f * a_k : list[a_f.hover].y;
             const float base = ImGui::GetFontSize();
             const float size = 28.0f * a_k;
             const auto  ts = ImGui::CalcTextSize(a_f.hoverName.c_str());
             const float kk = base > 0.0f ? size / base : 1.0f;
-            const V2    at{ i.x + 17.0f * a_k * Settings::Map().iconSize, i.y - ts.y * kk * 0.5f };
+            const V2    at{ ix + 17.0f * a_k * Settings::Map().iconSize, iy - ts.y * kk * 0.5f };
             D::AddText(a_dl, font, size, V2{ at.x + 2.0f * a_k, at.y + 2.0f * a_k }, Rgb(0, 0, 0, 220), a_f.hoverName.c_str());
             D::AddText(a_dl, font, size, at, Rgb(245, 243, 236), a_f.hoverName.c_str());
         }
@@ -2156,7 +2915,7 @@ namespace MiniMap
                     // the map menu's drawing did not take it: all of it here, with a cursor of our own over it
                     ImGuiCanvas canvas(dl);
                     DrawLocal(canvas, f, k);
-                    if (f.cursorX >= 0.0f && f.cursorY >= 0.0f && f.cursorY < f.my1) {
+                    if (!f.padCursor && f.cursorX >= 0.0f && f.cursorY >= 0.0f && f.cursorY < f.my1) {
                         using V2 = ImGui::ImVec2;
                         const float s = 22.0f * k;
                         const V2    tip{ f.cursorX, f.cursorY }, left{ f.cursorX, f.cursorY + s }, right{ f.cursorX + s * 0.72f, f.cursorY + s * 0.72f };
@@ -2164,10 +2923,12 @@ namespace MiniMap
                         ImGui::ImDrawListManager::AddTriangle(dl, tip, left, right, Rgb(20, 18, 15), 1.5f * k);
                     }
                 }
+                DrawCompass(dl, f, k);
                 DrawTitle(dl, f, k);
                 DrawHint(dl, f, k);
                 DrawLegendNames(dl, f, k);
                 DrawHoverName(dl, f, k);
+                DrawPerf(dl, k);
                 return;
             }
             if (ui->GameIsPaused() || menuOver || !ui->IsShowingMenus()) {
@@ -2175,7 +2936,9 @@ namespace MiniMap
             }
             if (f.has) {
                 DrawMinimap(dl, f, k);
+                DrawCompass(dl, f, k);
             }
+            DrawPerf(dl, k);
         }
 
         // ---- hooks
@@ -2376,6 +3139,13 @@ namespace MiniMap
             {
                 auto& s = Settings::Map();
                 for (auto event = a_event ? *a_event : nullptr; event; event = event->next) {
+                    if (event->GetDevice() == RE::INPUT_DEVICE::kGamepad) {
+                        if (const auto stick = event->AsThumbstickEvent(); !stick || std::hypot(stick->xValue, stick->yValue) > 0.3f) {
+                            padInUse = true;
+                        }
+                    } else if (event->GetDevice() == RE::INPUT_DEVICE::kKeyboard || event->GetDevice() == RE::INPUT_DEVICE::kMouse) {
+                        padInUse = false;
+                    }
                     if (const auto move = event->AsMouseMoveEvent(); move && local.open) {
                         rawX += static_cast<float>(move->mouseInputX);
                         rawY += static_cast<float>(move->mouseInputY);
@@ -2400,7 +3170,7 @@ namespace MiniMap
                     if (code != 0 && (code == s.rotateKey || code == s.rotateKeyPad)) {
                         turnHeld = local.open && button->IsPressed();
                     }
-                    if (local.open && code == 19 && button->IsDown() && !captureSlot) {
+                    if (local.open && (code == 19 || code == kPadRS) && button->IsDown() && !captureSlot) {
                         viewReset = true;
                     }
                     if (code == kMouseBase) {
@@ -2409,11 +3179,17 @@ namespace MiniMap
                     } else if (button->IsDown() && (code == kWheelUp || code == kWheelDown) && local.open) {
                         wheel += code == kWheelUp ? 1 : -1;
                     }
+                    if (local.open && !captureSlot && button->IsDown() && code >= kPadBase && code <= kPadBase + 3 && !Held(kPadBase + 8)) {
+                        padNav |= 1 << (code - kPadBase);  // up, down, left, right
+                    }
+                    if (local.open && !captureSlot && button->IsDown() && code == kPadBase + 10) {
+                        padNav |= 16;  // A
+                    }
                     // our local map up: closed by Esc, Tab, gamepad B or its own key; M goes on to the world map
                     // over the map menu's world map: its own key or the map's keys go back to it, Esc closes both
                     if (!captureSlot && code != 0 && button->IsDown() && LocalMenuOpen()) {
                         const bool shut = code == kEscape || code == 15 || code == kPadBase + 11;
-                        const bool own = ActionOf(code) == Action::kLocalMap;
+                        const bool own = ActionOf(code) == Action::kLocalMap && !(code >= kPadBase && code <= kPadBase + 3);  // the d-pad walks the legend here (B closes)
                         const bool world = code == 50 || WorldMapEvent(button);
                         if (overWorld) {
                             if (own || world) {
@@ -2478,11 +3254,13 @@ namespace MiniMap
                             break;
                         case Action::kZoomIn:
                         case Action::kZoomOut:
-                            Zoom(*action == Action::kZoomIn ? 1.0f : -1.0f);
+                            if (code < kPadBase) {  // the gamepad's zooms only while held (no step first)
+                                Zoom(*action == Action::kZoomIn ? 1.0f : -1.0f);
+                            }
                             break;
                         }
-                    } else if (button->IsHeld() && button->HeldDuration() > 0.35f && (*action == Action::kZoomIn || *action == Action::kZoomOut)) {
-                        // a key held: on zooming smoothly
+                    } else if (button->IsHeld() && (code >= kPadBase || button->HeldDuration() > 0.35f) && (*action == Action::kZoomIn || *action == Action::kZoomOut)) {
+                        // a key held: on zooming smoothly (the gamepad's at once)
                         Zoom((*action == Action::kZoomIn ? 5.0f : -5.0f) * std::clamp(RE::GetSecondsSinceLastFrame(), 0.0f, 0.1f));
                     }
                 }
@@ -2655,6 +3433,11 @@ namespace MiniMap
         lookedInto.clear();
         lootCache.clear();
         itemCache.clear();
+    }
+
+    bool MapModLoaded()
+    {
+        return MapModForms().off != nullptr;
     }
 
     std::optional<std::string> ItemName(std::string_view a_id)

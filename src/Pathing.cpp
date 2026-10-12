@@ -15,6 +15,7 @@ namespace Pathing
             std::vector<RE::NiPoint3>            vertices;
             std::vector<RE::BSNavmeshTriangle>   triangles;
             std::vector<RE::BSNavmeshEdgeExtraInfo> links;
+            std::vector<std::pair<std::uintptr_t, std::uint16_t>> doors;  // a door (by its pathing object) and a triangle at it
         };
         using Raws = std::vector<Raw>;
 
@@ -30,6 +31,13 @@ namespace Pathing
             std::vector<RE::NiPoint3>                              verts;
             std::vector<Tri>                                       tris;
             std::unordered_map<std::int64_t, std::vector<std::uint32_t>> grid;  // triangles by their centre, kGrid squares
+
+            int                    linkTypes[5]{};  // links to other navmeshes by type (+1: invalid, portal, ledge up, ledge down, switchable)
+            int                    unresolved = 0;  // ...into a navmesh not loaded
+            int                    doors = 0;       // doors walked through (two sides or more found)
+            // through a door: the triangles either side of one are not joined by an edge - the game walks through it by the
+            // door, both sides naming it
+            std::unordered_map<std::int32_t, std::vector<std::int32_t>> jumps;
 
             static constexpr float kGrid = 512.0f;
             static std::int64_t    Key(std::int32_t a_x, std::int32_t a_y) { return (static_cast<std::int64_t>(a_x) << 32) ^ static_cast<std::uint32_t>(a_y); }
@@ -52,13 +60,20 @@ namespace Pathing
             }
             g.verts.reserve(vb);
             g.tris.reserve(tb);
+            struct Back
+            {
+                std::int32_t tri, edge, from;
+            };
+            std::vector<Back> back;  // the links the other way (a navmesh may list the link on its own side only)
             for (const auto& m : a_raws) {
                 const auto vbase = bases[m.id].vertex, tbase = bases[m.id].triangle;
                 g.verts.insert(g.verts.end(), m.vertices.begin(), m.vertices.end());
                 const auto count = m.triangles.size();
                 for (const auto& t : m.triangles) {
                     Graph::Tri tri{};
-                    bool       ok = !t.triangleFlags.all(Flag::kDeleted);
+                    // a triangle the game cut away round an obstacle (a body, a crate, a gate let down) is kept: it flags the
+                    // original deleted and adds the pieces - the way shown keeps to the navmesh as it was made
+                    bool       ok = true;
                     for (int k = 0; k < 3; ++k) {
                         ok = ok && t.vertices[k] < m.vertices.size();
                         tri.v[k] = vbase + (t.vertices[k] < m.vertices.size() ? t.vertices[k] : 0);
@@ -67,11 +82,20 @@ namespace Pathing
                     for (int k = 0; ok && k < 3; ++k) {
                         const auto across = t.triangles[k];
                         if (t.triangleFlags.all(static_cast<Flag>(1 << k))) {
-                            // into another navmesh (the next cell's): through its link
-                            if (across < m.links.size() && m.links[across].type.get() == RE::EDGE_EXTRA_INFO_TYPE::kPortal) {
+                            // into another navmesh (the next cell's, or another part of a dungeon): through its link - a
+                            // portal, or one the game can switch (by gates, collapsing passages: open as the game keeps
+                            // them almost always); a ledge up or down is no way to walk
+                            const auto type = across < m.links.size() ? m.links[across].type.get() : RE::EDGE_EXTRA_INFO_TYPE::kInvalid;
+                            ++g.linkTypes[std::clamp(static_cast<int>(type), -1, 3) + 1];
+                            if (type == RE::EDGE_EXTRA_INFO_TYPE::kPortal || type == RE::EDGE_EXTRA_INFO_TYPE::kEnableDisablePortal) {
                                 const auto& portal = m.links[across].portal;
                                 if (const auto other = bases.find(portal.otherMeshID); other != bases.end() && portal.triangle < other->second.count) {
                                     tri.n[k] = static_cast<std::int32_t>(other->second.triangle + portal.triangle);
+                                    if (portal.edgeIndex >= 0 && portal.edgeIndex < 3) {
+                                        back.push_back({ tri.n[k], portal.edgeIndex, static_cast<std::int32_t>(g.tris.size()) });
+                                    }
+                                } else {
+                                    ++g.unresolved;  // its navmesh not loaded (the next cell, outside)
                                 }
                             }
                         } else if (across != 0xFFFF && across < count) {
@@ -87,6 +111,43 @@ namespace Pathing
                         tri.c = { FLT_MAX, FLT_MAX, FLT_MAX };  // never found, never entered
                     }
                     g.tris.push_back(tri);
+                }
+            }
+            for (const auto& b : back) {
+                if (auto& n = g.tris[static_cast<std::size_t>(b.tri)].n[b.edge]; n < 0) {
+                    n = b.from;
+                }
+            }
+            // every edge both ways: a neighbour may point past a triangle (to the pieces cut round an obstacle, or a link
+            // listed on one side only) - it is entered from either side all the same
+            for (std::int32_t a = 0; a < static_cast<std::int32_t>(g.tris.size()); ++a) {
+                for (const auto b : g.tris[static_cast<std::size_t>(a)].n) {
+                    if (b >= 0 && std::ranges::find(g.tris[static_cast<std::size_t>(b)].n, a) == std::end(g.tris[static_cast<std::size_t>(b)].n)) {
+                        g.jumps[b].push_back(a);
+                    }
+                }
+            }
+            // the doors: every triangle at one joined to every other at it
+            std::unordered_map<std::uintptr_t, std::vector<std::int32_t>> atDoor;
+            for (const auto& m : a_raws) {
+                const auto& base = bases[m.id];
+                for (const auto& [door, triangle] : m.doors) {
+                    if (door && triangle < base.count) {
+                        atDoor[door].push_back(static_cast<std::int32_t>(base.triangle + triangle));
+                    }
+                }
+            }
+            for (const auto& [door, list] : atDoor) {
+                if (list.size() < 2) {
+                    continue;
+                }
+                ++g.doors;
+                for (const auto a : list) {
+                    for (const auto b : list) {
+                        if (a != b) {
+                            g.jumps[a].push_back(b);
+                        }
+                    }
                 }
             }
             for (std::uint32_t i = 0; i < g.tris.size(); ++i) {
@@ -239,15 +300,23 @@ namespace Pathing
                     best = t;
                     break;
                 }
-                for (const auto next : a_g.tris[t].n) {
-                    if (next < 0 || done[next] || a_g.tris[next].c.x == FLT_MAX) {
-                        continue;
+                const auto step = [&](std::int32_t a_next) {
+                    if (a_next < 0 || done[a_next] || a_g.tris[a_next].c.x == FLT_MAX) {
+                        return;
                     }
-                    const float c = cost[t] + a_g.tris[t].c.GetDistance(a_g.tris[next].c);
-                    if (c < cost[next]) {
-                        cost[next] = c;
-                        from[next] = t;
-                        open.emplace(c + h(next), next);
+                    const float c = cost[t] + a_g.tris[t].c.GetDistance(a_g.tris[a_next].c);
+                    if (c < cost[a_next]) {
+                        cost[a_next] = c;
+                        from[a_next] = t;
+                        open.emplace(c + h(a_next), a_next);
+                    }
+                };
+                for (const auto next : a_g.tris[t].n) {
+                    step(next);
+                }
+                if (const auto it = a_g.jumps.find(t); it != a_g.jumps.end()) {
+                    for (const auto next : it->second) {
+                        step(next);
                     }
                 }
             }
@@ -268,12 +337,20 @@ namespace Pathing
             };
             std::vector<Portal> portals{ { a_from, a_from } };
             for (std::size_t i = 0; i + 1 < a_corridor.size(); ++i) {
+                // the edge they share: listed on this side, or (a link one way only) on the other
                 const auto& t = a_g.tris[a_corridor[i]];
-                for (int k = 0; k < 3; ++k) {
-                    if (t.n[k] == a_corridor[i + 1]) {
-                        const auto& p = a_g.verts[t.v[k]];
-                        const auto& q = a_g.verts[t.v[(k + 1) % 3]];
-                        portals.push_back(Area2(t.c, p, q) > 0.0f ? Portal{ p, q } : Portal{ q, p });
+                const auto& u = a_g.tris[a_corridor[i + 1]];
+                bool        found = false;
+                for (const auto [from, to] : { std::pair{ &t, a_corridor[i + 1] }, std::pair{ &u, a_corridor[i] } }) {
+                    for (int k = 0; k < 3 && !found; ++k) {
+                        if (from->n[k] == to) {
+                            const auto& p = a_g.verts[from->v[k]];
+                            const auto& q = a_g.verts[from->v[(k + 1) % 3]];
+                            portals.push_back(Area2(t.c, p, q) > 0.0f ? Portal{ p, q } : Portal{ q, p });
+                            found = true;
+                        }
+                    }
+                    if (found) {
                         break;
                     }
                 }
@@ -321,6 +398,40 @@ namespace Pathing
             return out;
         }
 
+        // two triangles sharing an edge (listed on either side)
+        bool Joined(const Graph& a_g, std::int32_t a_a, std::int32_t a_b)
+        {
+            const auto& a = a_g.tris[static_cast<std::size_t>(a_a)].n;
+            const auto& b = a_g.tris[static_cast<std::size_t>(a_b)].n;
+            return std::ranges::find(a, a_b) != std::end(a) || std::ranges::find(b, a_a) != std::end(b);
+        }
+
+        // a corridor pulled tight a piece at a time: where it goes through a door (two triangles not sharing an edge) the
+        // way runs to the middle of the triangle before the door and on from the one after it
+        std::vector<RE::NiPoint3> PullThroughDoors(const Graph& a_g, const std::vector<std::int32_t>& a_corridor, const RE::NiPoint3& a_from, const RE::NiPoint3& a_to)
+        {
+            std::vector<RE::NiPoint3> out;
+            RE::NiPoint3              at = a_from;
+            std::size_t               first = 0;
+            for (std::size_t i = 0; i + 1 <= a_corridor.size(); ++i) {
+                const bool last = i + 1 == a_corridor.size();
+                const bool door = !last && !Joined(a_g, a_corridor[i], a_corridor[i + 1]);
+                if (!last && !door) {
+                    continue;
+                }
+                const std::vector<std::int32_t> piece(a_corridor.begin() + static_cast<std::ptrdiff_t>(first), a_corridor.begin() + static_cast<std::ptrdiff_t>(i) + 1);
+                const auto                      end = last ? a_to : a_g.tris[a_corridor[i]].c;
+                auto                            part = Pull(a_g, piece, at, end);
+                out.insert(out.end(), part.begin() + (out.empty() ? 0 : 1), part.end());
+                if (!last) {
+                    at = a_g.tris[a_corridor[i + 1]].c;  // the other side of the door
+                    out.push_back(at);
+                    first = i + 1;
+                }
+            }
+            return out;
+        }
+
         // ---- the worker
         std::mutex                lock;
         std::condition_variable   wake;
@@ -331,6 +442,8 @@ namespace Pathing
         std::vector<Found>        result;
         std::uint64_t             generation = 0;  // Clear() bumps it: a search under way is thrown away
         std::uint64_t             version = 0;     // bumped by every new result
+
+        int notReachedLogs = 0;  // the first few ways that did not reach their target (for the log)
 
         void Work()
         {
@@ -353,8 +466,9 @@ namespace Pathing
                 if (raws) {
                     const auto start = std::chrono::steady_clock::now();
                     graph = Build(*raws);
-                    logger::info("pathing: {} navmeshes, {} triangles, built in {:.1f} ms", raws->size(), graph.tris.size(),
-                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+                    logger::info("pathing: {} navmeshes, {} triangles, built in {:.1f} ms; links to other navmeshes: {} portals, {} switchable, {} ledges, {} invalid, {} into navmeshes not loaded; {} doors walked through",
+                        raws->size(), graph.tris.size(), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(), graph.linkTypes[1],
+                        graph.linkTypes[4], graph.linkTypes[2] + graph.linkTypes[3], graph.linkTypes[0], graph.unresolved, graph.doors);
                 }
                 if (!job || graph.tris.empty()) {
                     continue;
@@ -370,9 +484,14 @@ namespace Pathing
                     if (start >= 0) {
                         const auto goal = Find(graph, target, 512.0f);
                         const auto corridor = Search(graph, start, goal, target);
+                        if ((corridor.empty() || corridor.back() != goal) && notReachedLogs < 20) {
+                            ++notReachedLogs;
+                            logger::info("pathing: target ({:.0f} {:.0f} {:.0f}) not reached from ({:.0f} {:.0f} {:.0f}): goal triangle {}, the way stopped {:.0f} units short",
+                                target.x, target.y, target.z, from.x, from.y, from.z, goal, corridor.empty() ? -1.0f : graph.tris[corridor.back()].c.GetDistance(target));
+                        }
                         // the target reached: to it; else to the nearest the loaded navmesh came
                         const auto end = !corridor.empty() && corridor.back() == goal ? target : graph.tris[corridor.back()].c;
-                        found.path = Pull(graph, corridor, from, end);
+                        found.path = PullThroughDoors(graph, corridor, from, end);
                     }
                     paths.push_back(std::move(found));
                 }
@@ -422,7 +541,7 @@ namespace Pathing
                 // sanity: absurd sizes are a misread layout
                 if (mesh && mesh->vertices.size() < 65535 && mesh->triangles.size() < 65535) {
                     meshes.push_back(mesh);
-                    now.emplace_back(mesh, mesh->triangles.size());
+                    now.emplace_back(mesh, 0);  // by the navmesh alone: its triangles cut and joined again round obstacles as things move are no new navmesh
                 }
             }
         }
@@ -440,6 +559,9 @@ namespace Pathing
             }
             raw.triangles.assign(mesh->triangles.begin(), mesh->triangles.end());
             raw.links.assign(mesh->extraEdgeInfo.begin(), mesh->extraEdgeInfo.end());
+            for (const auto& d : mesh->doorPortals) {
+                raw.doors.emplace_back(reinterpret_cast<std::uintptr_t>(d.door.get()), d.owningTriangleIndex);
+            }
             raws->push_back(std::move(raw));
         }
         StartWorker();

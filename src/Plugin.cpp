@@ -1,3 +1,4 @@
+#include "Fog.h"
 #include "Icons.h"
 #include "MapMesh.h"
 #include "Menu.h"
@@ -37,11 +38,12 @@ namespace
     }
 }
 
-// nothing goes into the save or to the disk: the map is what the game has loaded around the character
+// the map is what the game has loaded around the character; only the fog of war goes into the save's co-save (.skse)
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
     SKSE::Init(a_skse);
     SetupLog();
+    Fog::Register();
     Settings::Load();
     Icons::UseStyle(Settings::Map().look.iconStyle);
     MiniMap::Install();

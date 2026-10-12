@@ -40,6 +40,9 @@ namespace Icons
             { "ore", 0xF3A5, 165, 180, 205 },
             { "chest", 0xF552, 230, 175, 60 },
             { "clutter", 0xE4CF, 150, 145, 135 },
+            { "nirnroot", 0xF4D8, 110, 205, 240 },
+            { "crimsonnirnroot", 0xF4D8, 225, 60, 80 },
+            { "destination", 0xF276, 100, 235, 215 },
         };
         static_assert(std::size(kStyles) == kCount);
 

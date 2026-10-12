@@ -19,4 +19,7 @@ namespace MiniMap
 
     // the menu: what the map's item id finds (its name), nothing when it finds nothing
     std::optional<std::string> ItemName(std::string_view a_id);
+
+    // the menu: Helps To Have A Map loaded (its maps may be asked for)
+    bool MapModLoaded();
 }

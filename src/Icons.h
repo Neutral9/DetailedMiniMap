@@ -28,6 +28,9 @@ namespace Icons
         kOre,       // an ore vein not mined out
         kChest,     // a chest, a strongbox (a container of its own, apart from barrels, sacks, wardrobes)
         kClutter,   // an item of no worth: a bucket, a broom, a pot (the game's VendorItemClutter)
+        kNirnroot,  // a nirnroot to pick (it chimes, it glows)
+        kCrimson,   // a crimson nirnroot (Blackreach)
+        kDestination,  // the destination set on the world map (Set Destination)
         kTotal
     };
     inline constexpr std::size_t kCount = static_cast<std::size_t>(Kind::kTotal);

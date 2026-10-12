@@ -50,7 +50,9 @@ namespace Menu
             } else {
                 label = a_padKey != 0 ? Settings::BindName(a_padKey, a_padMod) : Settings::BindName(a_key, a_mod);
             }
-            if (ImGui::Button(std::format("{}###{}", label, a_id).c_str(), ImGui::ImVec2{ 360.0f, 0.0f })) {
+            // as wide as its text needs (360 at least: the buttons line up)
+            const float width = std::max(360.0f, ImGui::CalcTextSize(label.c_str()).x + 24.0f);
+            if (ImGui::Button(std::format("{}###{}", label, a_id).c_str(), ImGui::ImVec2{ width, 0.0f })) {
                 // a second click: no longer waiting, the binds as they were
                 waiting ? MiniMap::StartCapture(nullptr, nullptr) : MiniMap::StartCapture(&a_key, &a_mod, &a_padKey, &a_padMod);
             }
@@ -79,20 +81,85 @@ namespace Menu
             SaveAfterEdit();
         }
 
+
+        // presets: every setting but the keys, the language and the item the map needs - chosen from the list, loaded,
+        // saved over, deleted, or saved under a new name
+        // the preset picked in the list (a page reset picks the Default one: what the settings then are)
+        std::string chosen;
+
+        void Presets()
+        {
+            using Lang::S;
+            static std::vector<std::string> list;
+            static char                     name[96] = {};
+            static bool                     looked = false;
+            if (!looked || ImGui::IsWindowAppearing()) {
+                list = Settings::Presets();
+                looked = true;
+            }
+            ImGui::SeparatorText(Lang::T(S::SecPresets));
+            ImGui::SetNextItemWidth(360.0f);
+            if (ImGui::BeginCombo(Lang::L(S::SecPresets).c_str(), chosen.empty() ? Lang::T(S::PresetNone) : chosen.c_str())) {
+                for (const auto& p : list) {
+                    if (ImGui::Selectable(p.c_str(), p == chosen)) {
+                        chosen = p;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::BeginDisabled(chosen.empty());
+            if (ImGui::Button(Lang::L(S::PresetLoad).c_str())) {
+                MiniMap::StartCapture(nullptr, nullptr);
+                Settings::LoadPreset(chosen);
+                Icons::UseStyle(Settings::Map().look.iconStyle);
+            }
+            ImGui::SameLine();
+            ImGui::BeginDisabled(Settings::IsDefaultPreset(chosen));  // the Default one is the defaults: never written over, never deleted
+            if (ImGui::Button(Lang::L(S::PresetSave).c_str())) {
+                Settings::SavePreset(chosen);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(Lang::L(S::PresetDelete).c_str())) {
+                Settings::DeletePreset(chosen);
+                chosen.clear();
+                list = Settings::Presets();
+            }
+            ImGui::EndDisabled();
+            ImGui::EndDisabled();
+            ImGui::SetNextItemWidth(360.0f);
+            ImGui::InputText(Lang::L(S::PresetName).c_str(), name, sizeof(name));
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!*name || Settings::IsDefaultPreset(name));
+            if (ImGui::Button(Lang::L(S::PresetSaveAs).c_str()) && Settings::SavePreset(name)) {
+                list = Settings::Presets();
+                for (const auto& p : list) {
+                    if (_stricmp(p.c_str(), name) == 0) {
+                        chosen = p;
+                    }
+                }
+                *name = 0;
+            }
+            ImGui::EndDisabled();
+        }
+
+        // the map page: what the map does - when it shows, its keys, how far it reaches, what it marks, the beams
         void __stdcall RenderMap()
         {
             using Lang::S;
             auto& m = Settings::Map();
             ImGui::TextWrapped("%s", Lang::T(S::Intro));
             {
-                // every language by its own name
-                int         current = Lang::Current();
-                const char* names[Lang::kLanguages];
-                for (int i = 0; i < Lang::kLanguages; ++i) {
-                    names[i] = Lang::Name(i);
+                // the game's language first, then every language by its English name, A to Z (as Hotkey Atlas has them)
+                static constexpr const char* kNames[] = { "Game language", "Chinese", "English", "French", "German", "Italian", "Japanese", "Polish", "Russian", "Spanish" };
+                static constexpr int         kOrder[] = { -1, 7, 1, 2, 4, 3, 8, 6, 0, 5 };  // Lang's index of each (zh, en, fr, de, it, ja, pl, ru, es)
+                int current = 0;
+                for (int i = 0; i < static_cast<int>(std::size(kOrder)); ++i) {
+                    if (kOrder[i] == (m.language >= 0 && m.language < Lang::kLanguages ? m.language : -1)) {
+                        current = i;
+                    }
                 }
-                if (ImGui::Combo(Lang::L(S::Language).c_str(), &current, names, Lang::kLanguages)) {
-                    m.language = current;
+                if (ImGui::Combo(Lang::L(S::Language).c_str(), &current, kNames, static_cast<int>(std::size(kNames)))) {
+                    m.language = kOrder[current];
                     Settings::Save();
                     // the tabs renamed outside the menu's own drawing (on the main thread)
                     if (const auto tasks = SKSE::GetTaskInterface()) {
@@ -100,6 +167,9 @@ namespace Menu
                     }
                 }
             }
+            Presets();
+
+            ImGui::SeparatorText(Lang::T(S::SecMinimap));
             Check(Lang::L(S::Enabled).c_str(), m.enabled);
             {
                 const char* places[] = { Lang::T(S::ShowEverywhere), Lang::T(S::ShowInside), Lang::T(S::ShowOutside) };
@@ -109,14 +179,14 @@ namespace Menu
             }
             KeyButton(Lang::T(S::ToggleKey), m.toggleKey, m.toggleMod, m.toggleKeyPad, m.toggleModPad, "toggle");
             Check(Lang::L(S::ToggleHold).c_str(), m.toggleHold);
-            Check(Lang::L(S::LocalMap).c_str(), m.localMap);
-            if (m.localMap) {
-                KeyButton(Lang::T(S::LocalMapKey), m.localMapKey, m.localMapMod, m.localMapKeyPad, m.localMapModPad, "localmap");
-                Check(Lang::L(S::LocalMapHold).c_str(), m.localMapHold);
-                KeyButton(Lang::T(S::RotateKey), m.rotateKey, m.rotateMod, m.rotateKeyPad, m.rotateModPad, "rotate");
-                Check(Lang::L(S::RotateInvertX).c_str(), m.rotateInvertX);
-                Check(Lang::L(S::RotateInvertY).c_str(), m.rotateInvertY);
-                Slider(S::RotateSpeed, m.rotateSpeed, 0.2f, 3.0f, "%.2f");
+            Check(Lang::L(S::NorthUp).c_str(), m.northUp);
+            Slider(S::RangeOutside, m.minimapRange, 300.0f, 12000.0f, "%.0f", true);
+            Slider(S::RangeInside, m.minimapRangeInside, 300.0f, 12000.0f, "%.0f", true);
+            KeyButton(Lang::T(S::ZoomInKey), m.zoomInKey, m.zoomInMod, m.zoomInKeyPad, m.zoomInModPad, "zoomin");
+            KeyButton(Lang::T(S::ZoomOutKey), m.zoomOutKey, m.zoomOutMod, m.zoomOutKeyPad, m.zoomOutModPad, "zoomout");
+            Check(Lang::L(S::DynamicZoom).c_str(), m.dynamicZoom);
+            if (m.dynamicZoom) {
+                Slider(S::DynamicZoomStrength, m.dynamicZoomStrength, 0.25f, 2.0f, "%.2f");
             }
             // the map only with an item in the inventory: its EditorID (or Plugin.esp|0x800) typed under the box
             Check(Lang::L(S::NeedItem).c_str(), m.needItem);
@@ -148,48 +218,46 @@ namespace Menu
                 }
                 ImGui::EndDisabled();
             }
-
-            ImGui::SeparatorText(Lang::T(S::SecMinimap));
+            // Helps To Have A Map: one of its maps for where the character is (as its own map menu asks); off without it
             {
-                int         shape = m.minimapRound ? 1 : 0;
-                const char* shapes[] = { Lang::T(S::Square), Lang::T(S::Round) };
-                if (ImGui::Combo(Lang::L(S::Shape).c_str(), &shape, shapes, 2)) {
-                    m.minimapRound = shape == 1;
-                    Settings::Save();
-                }
-                if (!m.minimapRound) {
-                    Slider(S::Corner, m.minimapCorner, 0.0f, 150.0f, "%.0f");
+                const bool loaded = MiniMap::MapModLoaded();
+                ImGui::BeginDisabled(!loaded);
+                Check(Lang::L(S::NeedMapMod).c_str(), m.needMapMod);
+                ImGui::EndDisabled();
+                if (!loaded) {
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImGui::ImVec4{ 0.6f, 0.6f, 0.6f, 1.0f }, "%s", Lang::T(S::MapModMissing));
                 }
             }
-            Check(Lang::L(S::NorthUp).c_str(), m.northUp);
-            Check(Lang::L(S::MinimapFrame).c_str(), m.minimapFrame);
-            Check(Lang::L(S::PointerCamera).c_str(), m.pointerCamera);
-            Slider(S::Size, m.minimapSize, 100.0f, 600.0f, "%.0f");
-            Slider(S::RangeOutside, m.minimapRange, 300.0f, 12000.0f, "%.0f", true);
-            Slider(S::RangeInside, m.minimapRangeInside, 300.0f, 12000.0f, "%.0f", true);
-            KeyButton(Lang::T(S::ZoomInKey), m.zoomInKey, m.zoomInMod, m.zoomInKeyPad, m.zoomInModPad, "zoomin");
-            KeyButton(Lang::T(S::ZoomOutKey), m.zoomOutKey, m.zoomOutMod, m.zoomOutKeyPad, m.zoomOutModPad, "zoomout");
-            Slider(S::Tilt, m.minimapTilt, 20.0f, 90.0f, "%.0f");
-            Slider(S::MinimapOpacity, m.minimapOpacity, 0.1f, 1.0f, "%.2f");
 
-            ImGui::SeparatorText(Lang::T(S::SecPosition));
-            {
-                const char* corners[] = { Lang::T(S::TopLeft), Lang::T(S::TopRight), Lang::T(S::BottomLeft), Lang::T(S::BottomRight) };
-                if (ImGui::Combo(Lang::L(S::Anchor).c_str(), &m.anchor, corners, 4)) {
-                    Settings::Save();
-                }
+            ImGui::SeparatorText(Lang::T(S::LocalMap));
+            Check(Lang::L(S::LocalMap).c_str(), m.localMap);
+            if (m.localMap) {
+                KeyButton(Lang::T(S::LocalMapKey), m.localMapKey, m.localMapMod, m.localMapKeyPad, m.localMapModPad, "localmap");
+                Check(Lang::L(S::LocalMapHold).c_str(), m.localMapHold);
+                Check(Lang::L(S::RotateInvertX).c_str(), m.rotateInvertX);
+                Check(Lang::L(S::RotateInvertY).c_str(), m.rotateInvertY);
+                Slider(S::RotateSpeed, m.rotateSpeed, 0.2f, 3.0f, "%.2f");
             }
-            Slider(S::OffsetX, m.offsetX, 0.0f, 1500.0f, "%.0f");
-            Slider(S::OffsetY, m.offsetY, 0.0f, 1000.0f, "%.0f");
 
             ImGui::SeparatorText(Lang::T(S::SecIcons));
-            Slider(S::IconSize, m.iconSize, 0.4f, 3.0f, "%.2f");
             Slider(S::IconFadeIn, m.iconFadeIn, 0.0f, 3.0f, m.iconFadeIn > 0.0f ? "%.2f" : Lang::T(S::AtOnce));
             Slider(S::IconFadeOut, m.iconFadeOut, 0.0f, 3.0f, m.iconFadeOut > 0.0f ? "%.2f" : Lang::T(S::AtOnce));
             Slider(S::IconRange, m.iconRange, 0.0f, 20000.0f, m.iconRange > 0.0f ? "%.0f" : Lang::T(S::Everywhere));
             Slider(S::LootHeight, m.lootHeight, 0.0f, 1000.0f, m.lootHeight > 0.0f ? "%.0f" : Lang::T(S::AllHeights));
             Check(Lang::L(S::HideEmpty).c_str(), m.hideEmpty);
             Check(Lang::L(S::GroupIcons).c_str(), m.groupIcons);
+            {
+                const char* detect[] = { Lang::T(S::DetectOff), Lang::T(S::DetectEnemies), Lang::T(S::DetectAll) };
+                if (ImGui::Combo(Lang::L(S::DetectOnly).c_str(), &m.detectOnly, detect, 3)) {
+                    Settings::Save();
+                }
+            }
+            // four columns, as wide as the longest name needs (a checkbox and a gap before it)
+            float column = 180.0f;
+            for (std::size_t i = 0; i < m.show.size(); ++i) {
+                column = std::max(column, ImGui::CalcTextSize(Icons::Name(static_cast<Icons::Kind>(i))).x + 56.0f);
+            }
             for (std::size_t i = 0; i < m.show.size(); ++i) {
                 bool on = m.show[i];
                 if (ImGui::Checkbox(std::format("{}###show{}", Icons::Name(static_cast<Icons::Kind>(i)), i).c_str(), &on)) {
@@ -197,7 +265,7 @@ namespace Menu
                     Settings::Save();
                 }
                 if (i % 4 != 3 && i + 1 < m.show.size()) {
-                    ImGui::SameLine(180.0f * static_cast<float>(i % 4 + 1));
+                    ImGui::SameLine(column * static_cast<float>(i % 4 + 1));
                 }
             }
 
@@ -208,7 +276,18 @@ namespace Menu
             ImGui::SeparatorText(Lang::T(S::SecQuests));
             Check(Lang::L(S::QuestBeam).c_str(), m.questBeam);
             Check(Lang::L(S::BeamNearest).c_str(), m.beamNearest);
+            Check(Lang::L(S::DestinationBeam).c_str(), m.destinationBeam);
             KeyButton(Lang::T(S::BeamKey), m.beamKey, m.beamMod, m.beamKeyPad, m.beamModPad, "beam");
+
+            ImGui::SeparatorText(Lang::T(S::SecFog));
+            Check(Lang::L(S::Fog).c_str(), m.fog);
+            if (m.fog) {
+                Check(Lang::L(S::FogMinimap).c_str(), m.fogMinimap);
+                Check(Lang::L(S::FogLocal).c_str(), m.fogLocal);
+                Slider(S::FogRadius, m.fogRadius, 500.0f, 10000.0f, "%.0f");
+                Slider(S::FogRadiusInside, m.fogRadiusInside, 200.0f, 5000.0f, "%.0f");
+                Check(Lang::L(S::FogHideIcons).c_str(), m.fogHideIcons);
+            }
 
             ImGui::SeparatorText(Lang::T(S::SecDebug));
             Check(Lang::L(S::DebugLog).c_str(), m.debugLog);
@@ -217,13 +296,20 @@ namespace Menu
             if (ImGui::Button(Lang::L(S::ResetMap).c_str())) {
                 MiniMap::StartCapture(nullptr, nullptr);  // a bind being waited for: no more
                 Settings::ResetMap();
+                chosen = Settings::kDefaultPreset;
+                // the language back to the game's: the tabs renamed outside the menu's own drawing (on the main thread)
+                if (const auto tasks = SKSE::GetTaskInterface()) {
+                    tasks->AddTask([] { NameTabs(); });
+                }
             }
         }
 
+        // the look page: how the map looks - its style, shape, size and place, colours, icons, frame and beams
         void __stdcall RenderLook()
         {
             using Lang::S;
-            auto& l = Settings::Map().look;
+            auto& m = Settings::Map();
+            auto& l = m.look;
             {
                 const char* styles[] = { Lang::T(S::StyleColour), Lang::T(S::StyleVanilla) };
                 if (ImGui::Combo(Lang::L(S::Style).c_str(), &l.style, styles, 2)) {
@@ -248,33 +334,89 @@ namespace Menu
                 }
             }
             {
-                // the minimap's frames: the drawn one (the style's), or a folder of pictures (found when the list opens)
+                // the minimap's frame: none, the drawn one (the style's), or a folder of pictures (found when the list opens)
                 static std::vector<std::string> found;
+                const char*                     none = Lang::T(S::FrameNone);
                 const char*                     drawn = Lang::T(S::FrameDrawn);
-                if (ImGui::BeginCombo(Lang::L(S::FrameStyle).c_str(), l.frameStyle.empty() ? drawn : l.frameStyle.c_str())) {
+                const char*                     shown = !m.minimapFrame ? none : l.frameStyle.empty() ? drawn : l.frameStyle.c_str();
+                if (ImGui::BeginCombo(Lang::L(S::FrameStyle).c_str(), shown)) {
                     if (found.empty() || ImGui::IsWindowAppearing()) {
                         found = Icons::Frames();
                     }
-                    if (ImGui::Selectable(drawn, l.frameStyle.empty())) {
+                    if (ImGui::Selectable(none, !m.minimapFrame)) {
+                        m.minimapFrame = false;
+                        Settings::Save();
+                    }
+                    if (ImGui::Selectable(drawn, m.minimapFrame && l.frameStyle.empty())) {
+                        m.minimapFrame = true;
                         l.frameStyle.clear();
                         Settings::Save();
                     }
                     for (const auto& name : found) {
-                        if (ImGui::Selectable(name.c_str(), name == l.frameStyle)) {
+                        if (ImGui::Selectable(name.c_str(), m.minimapFrame && name == l.frameStyle)) {
+                            m.minimapFrame = true;
                             l.frameStyle = name;
                             Settings::Save();
                         }
                     }
                     ImGui::EndCombo();
                 }
+                if (m.minimapFrame) {
+                    Slider(S::FrameOpacity, l.frameOpacity, 0.0f, 1.0f, "%.2f");
+                    Color(Lang::L(S::FrameColor).c_str(), l.frameColor);
+                }
             }
-            Slider(S::FrameOpacity, l.frameOpacity, 0.0f, 1.0f, "%.2f");
+
+            ImGui::SeparatorText(Lang::T(S::SecMinimapLook));
+            {
+                int         shape = m.minimapRound ? 1 : 0;
+                const char* shapes[] = { Lang::T(S::Square), Lang::T(S::Round) };
+                if (ImGui::Combo(Lang::L(S::Shape).c_str(), &shape, shapes, 2)) {
+                    m.minimapRound = shape == 1;
+                    Settings::Save();
+                }
+                if (!m.minimapRound) {
+                    Slider(S::Corner, m.minimapCorner, 0.0f, 150.0f, "%.0f");
+                }
+            }
+            Slider(S::Size, m.minimapSize, 100.0f, 600.0f, "%.0f");
+            Slider(S::Tilt, m.minimapTilt, 20.0f, 90.0f, "%.0f");
+            Slider(S::MinimapOpacity, m.minimapOpacity, 0.1f, 1.0f, "%.2f");
+            Check(Lang::L(S::Compass).c_str(), m.compass);
+            if (m.compass) {
+                Slider(S::CompassSize, m.compassSize, 0.5f, 2.5f, "%.2f");
+            }
+            Check(Lang::L(S::PointerCamera).c_str(), m.pointerCamera);
+
+            ImGui::SeparatorText(Lang::T(S::SecPosition));
+            {
+                const char* corners[] = { Lang::T(S::TopLeft), Lang::T(S::TopRight), Lang::T(S::BottomLeft), Lang::T(S::BottomRight), Lang::T(S::Centre) };
+                const int   was = m.anchor;
+                if (ImGui::Combo(Lang::L(S::Anchor).c_str(), &m.anchor, corners, 5)) {
+                    if ((was == 4) != (m.anchor == 4)) {  // the offsets from the middle start at it, from a corner as they first were
+                        m.offsetX = m.offsetY = m.anchor == 4 ? 0.0f : 18.0f;
+                    }
+                    Settings::Save();
+                }
+            }
+            if (m.anchor == 4) {
+                Slider(S::OffsetX, m.offsetX, -900.0f, 900.0f, "%.0f");
+                Slider(S::OffsetY, m.offsetY, -500.0f, 500.0f, "%.0f");
+            } else {
+                Slider(S::OffsetX, m.offsetX, 0.0f, 1500.0f, "%.0f");
+                Slider(S::OffsetY, m.offsetY, 0.0f, 1000.0f, "%.0f");
+            }
+
+            ImGui::SeparatorText(Lang::T(S::SecIcons));
+            Slider(S::IconSize, m.iconSize, 0.4f, 3.0f, "%.2f");
             Slider(S::IconOpacity, l.iconOpacity, 0.05f, 1.0f, "%.2f");
-            ImGui::SeparatorText(Lang::T(S::SecFrameBeam));
-            Color(Lang::L(S::FrameColor).c_str(), l.frameColor);
+
+            ImGui::SeparatorText(Lang::T(S::SecBeams));
             Color(Lang::L(S::BeamColor).c_str(), l.beamColor);
+            Color(Lang::L(S::DestinationColor).c_str(), l.destinationColor);
             Slider(S::BeamWidth, l.beamWidth, 0.5f, 3.0f, "%.2f");
             Slider(S::BeamOpacity, l.beamOpacity, 0.0f, 1.0f, "%.2f");
+            Check(Lang::L(S::BeamColours).c_str(), l.beamColours);
             Check(Lang::L(S::BeamLights).c_str(), l.beamLights);
             const bool colour = l.style == 0;  // the vanilla style has its own palette: no colours to set
             ImGui::SeparatorText(Lang::T(S::SecGround));
@@ -316,11 +458,18 @@ namespace Menu
                 Color(Lang::L(S::WaterColor).c_str(), l.waterColor);
             }
 
+            ImGui::SeparatorText(Lang::T(S::SecFog));
+            Color(Lang::L(S::FogColor).c_str(), l.fogColor);
+            Slider(S::FogOpacity, l.fogOpacity, 0.1f, 1.0f, "%.2f");
+            Slider(S::FogFade, l.fogFade, 0.0f, 3.0f, l.fogFade > 0.0f ? "%.2f" : Lang::T(S::AtOnce));
+            Slider(S::FogNoise, l.fogNoise, 0.0f, 2.0f, "%.2f");
+
             ImGui::SeparatorText(Lang::T(S::SecOther));
             Slider(S::DepthShade, l.depthShade, 0.0f, 1.0f, "%.2f");
             Slider(S::FadeTime, l.fadeTime, 0.0f, 3.0f, "%.2f");
             if (ImGui::Button(Lang::L(S::ResetLook).c_str())) {
                 Settings::ResetLook();
+                chosen = Settings::kDefaultPreset;
             }
         }
 

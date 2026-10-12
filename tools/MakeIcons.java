@@ -35,6 +35,9 @@ public class MakeIcons {
         new Icon("ore", 0xF3A5, 165, 180, 205),
         new Icon("chest", 0xF552, 230, 175, 60),
         new Icon("clutter", 0xE4CF, 150, 145, 135),
+        new Icon("nirnroot", 0xF4D8, 110, 205, 240),
+        new Icon("crimsonnirnroot", 0xF4D8, 225, 60, 80),
+        new Icon("destination", 0xF276, 100, 235, 215),
         new Icon("player", 0xF007, 255, 210, 90),  // the character (drawn upright; the map adds a pointer on its rim)
     };
     static final int S = 128;
