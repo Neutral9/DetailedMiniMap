@@ -109,7 +109,6 @@ namespace Lang
         Unbind,
         IconStyle,
         ToggleHold,
-        MinimapFrame,
         BeamNearest,
         HideEmpty,
         GroupIcons,
@@ -130,13 +129,11 @@ namespace Lang
         LootHeight,
         AllHeights,
         SeeUnderwater,
-        RotateKey,
         HintRotate,
         HintReset,
         RotateInvertX,
         RotateInvertY,
         RotateSpeed,
-        SecFrameBeam,
         FrameColor,
         BeamColor,
         BeamWidth,
@@ -182,13 +179,11 @@ namespace Lang
         HintMove,
         HintZoom,
         CompassSize,
-        RightStick,
         kCount
     };
 
     inline constexpr int kLanguages = 9;
 
-    const char* Name(int a_language);  // a language's own name, for the menu
     int         Current();             // the language in use: the menu's choice, else the game's
     const char* T(S a_text);           // a text in the language in use
     std::string L(S a_text);           // the same with a fixed ImGui id ("text###id"): a widget keeps its state across languages

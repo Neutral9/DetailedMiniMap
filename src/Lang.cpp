@@ -16,7 +16,7 @@ namespace Lang
             "SecOther", "DepthShade", "FadeTime", "ResetLook", "TabMap", "TabLook", "Enemies", "Guards", "Residents", "Followers", "Animals", "Doors", "Food", "Potions",
             "Chests", "Weapons", "Armor", "Loot", "Quests", "Bodies", "Plants", "Ores", "TreasureChests", "Clutter", "Nirnroot", "CrimsonNirnroot", "Destination", "SecPosition", "Anchor", "TopLeft", "TopRight", "BottomLeft", "BottomRight",
             "OffsetX", "OffsetY", "SecQuests", "QuestBeam", "BeamKey", "LocalMap", "SecDebug", "DebugLog", "LocalMapKey", "ZoomInKey", "ZoomOutKey",
-            "MinimapOpacity", "IconRange", "Everywhere", "ResetMap", "HintWorld", "HintClose", "Legend", "Unbind", "IconStyle", "ToggleHold", "MinimapFrame", "BeamNearest", "HideEmpty", "GroupIcons", "LocalMapHold", "FrameStyle", "FrameDrawn", "PointerCamera", "FrameOpacity", "IconOpacity", "NeedItem", "NeedItemId", "ItemFound", "ItemNotFound", "ShowWhere", "ShowEverywhere", "ShowInside", "ShowOutside", "LootHeight", "AllHeights", "SeeUnderwater", "RotateKey", "HintRotate", "HintReset", "RotateInvertX", "RotateInvertY", "RotateSpeed", "SecFrameBeam", "FrameColor", "BeamColor", "BeamWidth", "BeamOpacity", "BeamLights", "Compass", "DynamicZoom", "DynamicZoomStrength", "DetectOnly", "DetectOff", "DetectEnemies", "DetectAll", "CompassLetters", "SecPresets", "PresetLoad", "PresetSave", "PresetSaveAs", "PresetDelete", "PresetName", "PresetNone", "DestinationBeam", "BeamColours", "DestinationColor", "SecMinimapLook", "FrameNone", "SecBeams", "ShowAll", "HideAll", "Centre", "NeedMapMod", "MapModMissing", "SecFog", "Fog", "FogMinimap", "FogLocal", "FogRadius", "FogRadiusInside", "FogHideIcons", "FogColor", "FogOpacity", "FogFade", "FogNoise", "HintMove", "HintZoom", "CompassSize", "RightStick" };
+            "MinimapOpacity", "IconRange", "Everywhere", "ResetMap", "HintWorld", "HintClose", "Legend", "Unbind", "IconStyle", "ToggleHold", "BeamNearest", "HideEmpty", "GroupIcons", "LocalMapHold", "FrameStyle", "FrameDrawn", "PointerCamera", "FrameOpacity", "IconOpacity", "NeedItem", "NeedItemId", "ItemFound", "ItemNotFound", "ShowWhere", "ShowEverywhere", "ShowInside", "ShowOutside", "LootHeight", "AllHeights", "SeeUnderwater", "HintRotate", "HintReset", "RotateInvertX", "RotateInvertY", "RotateSpeed", "FrameColor", "BeamColor", "BeamWidth", "BeamOpacity", "BeamLights", "Compass", "DynamicZoom", "DynamicZoomStrength", "DetectOnly", "DetectOff", "DetectEnemies", "DetectAll", "CompassLetters", "SecPresets", "PresetLoad", "PresetSave", "PresetSaveAs", "PresetDelete", "PresetName", "PresetNone", "DestinationBeam", "BeamColours", "DestinationColor", "SecMinimapLook", "FrameNone", "SecBeams", "ShowAll", "HideAll", "Centre", "NeedMapMod", "MapModMissing", "SecFog", "Fog", "FogMinimap", "FogLocal", "FogRadius", "FogRadiusInside", "FogHideIcons", "FogColor", "FogOpacity", "FogFade", "FogNoise", "HintMove", "HintZoom", "CompassSize" };
 
         // Data/SKSE/Plugins/DetailedMiniMap/Translations/<code>.txt, in the order of the Language setting
         constexpr const char* kCodes[kLanguages] = { "ru", "en", "fr", "it", "de", "es", "pl", "zh", "ja" };
@@ -24,7 +24,6 @@ namespace Lang
 
         struct Language
         {
-            std::string                                            name;
             std::array<std::string, static_cast<int>(S::kCount)> texts;
         };
 
@@ -70,8 +69,6 @@ namespace Lang
                         const auto english = find(kEnglish, a_key);
                         return own ? *own : english ? *english : a_key;
                     };
-                    const auto name = find(i, "Name");
-                    out[i].name = name ? *name : kCodes[i];
                     for (int t = 0; t < static_cast<int>(S::kCount); ++t) {
                         out[i].texts[t] = pick(kKeys[t]);
                     }
@@ -99,11 +96,6 @@ namespace Lang
             }();
             return language;
         }
-    }
-
-    const char* Name(int a_language)
-    {
-        return Languages()[std::clamp(a_language, 0, kLanguages - 1)].name.c_str();
     }
 
     int Current()

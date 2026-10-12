@@ -2,7 +2,6 @@
 ; Key = text, UTF-8. A missing key falls back to en.txt, then to the key itself.
 ; Name is how the language is listed in the menu.
 
-Name = Русский
 Intro = Подробная 3D-карта из настоящих мешей мира: земля, дома, лестницы, камни, мебель.
 Language = Язык
 Enabled = Карта включена
@@ -98,7 +97,6 @@ Legend = Легенда
 Unbind = Отвязать
 IconStyle = Стиль иконок
 ToggleHold = Показывать, только пока клавиша зажата
-MinimapFrame = Рамка
 BeamNearest = Один луч, к ближайшему квесту (выкл.: луч к каждому квесту)
 HideEmpty = Скрывать пустые контейнеры
 GroupIcons = Объединять близкие иконки
@@ -124,13 +122,11 @@ ShowOutside = Только снаружи
 LootHeight = Лут по высоте (в помещениях)
 AllHeights = Все этажи
 SeeUnderwater = Видеть сквозь воду при погружении
-RotateKey = Вращать локальную карту (удерживать)
 HintRotate = Вращать
 HintReset = Сбросить вид
 RotateInvertX = Инвертировать поворот (влево / вправо)
 RotateInvertY = Инвертировать наклон (вверх / вниз)
 RotateSpeed = Чувствительность поворота
-SecFrameBeam = Рамка и лучи
 FrameColor = Цвет рамки (белый: как есть)
 BeamColor = Цвет квестового луча
 BeamWidth = Толщина луча
@@ -176,4 +172,3 @@ FogNoise = Неровность края
 HintMove = Двигать
 HintZoom = Масштаб
 CompassSize = Размер букв сторон света
-RightStick = (геймпад: правый стик)

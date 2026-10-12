@@ -2,7 +2,6 @@
 ; Key = text, UTF-8. A missing key falls back to en.txt, then to the key itself.
 ; Name is how the language is listed in the menu.
 
-Name = Deutsch
 Intro = Eine detaillierte 3D-Karte aus den echten Meshes der Welt: Gelände, Häuser, Treppen, Felsen, Möbel.
 Language = Sprache
 Enabled = Karte aktiviert
@@ -98,7 +97,6 @@ Legend = Legende
 Unbind = Entfernen
 IconStyle = Symbolstil
 ToggleHold = Nur anzeigen, solange die Taste gehalten wird
-MinimapFrame = Rahmen
 BeamNearest = Ein Strahl, zur nächsten Quest (aus: ein Strahl je Quest)
 HideEmpty = Leere Behälter ausblenden
 GroupIcons = Nahe Symbole zusammenfassen
@@ -124,13 +122,11 @@ ShowOutside = Nur draußen
 LootHeight = Beute-Höhenbereich (innen)
 AllHeights = Alle Stockwerke
 SeeUnderwater = Beim Tauchen durch das Wasser sehen
-RotateKey = Lokale Karte drehen (halten)
 HintRotate = Drehen
 HintReset = Ansicht zurücksetzen
 RotateInvertX = Drehung umkehren (links / rechts)
 RotateInvertY = Neigung umkehren (oben / unten)
 RotateSpeed = Drehempfindlichkeit
-SecFrameBeam = Rahmen und Strahlen
 FrameColor = Rahmenfarbe (weiß: unverändert)
 BeamColor = Farbe des Questpfads
 BeamWidth = Strahlbreite
@@ -176,4 +172,3 @@ FogNoise = Randrauschen
 HintMove = Bewegen
 HintZoom = Zoom
 CompassSize = Größe der Kompassbuchstaben
-RightStick = (Gamepad: rechter Stick)

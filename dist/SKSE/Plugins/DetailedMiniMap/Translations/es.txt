@@ -2,7 +2,6 @@
 ; Key = text, UTF-8. A missing key falls back to en.txt, then to the key itself.
 ; Name is how the language is listed in the menu.
 
-Name = Español
 Intro = Un mapa 3D detallado hecho con las mallas reales del mundo: terreno, casas, escaleras, rocas, muebles.
 Language = Idioma
 Enabled = Mapa activado
@@ -98,7 +97,6 @@ Legend = Leyenda
 Unbind = Quitar
 IconStyle = Estilo de iconos
 ToggleHold = Mostrar solo mientras se mantiene la tecla
-MinimapFrame = Marco
 BeamNearest = Un solo rayo, a la misión más cercana (desactivado: un rayo por misión)
 HideEmpty = Ocultar contenedores vacíos
 GroupIcons = Agrupar iconos cercanos
@@ -124,13 +122,11 @@ ShowOutside = Solo en exteriores
 LootHeight = Altura del botín (interiores)
 AllHeights = Todos los pisos
 SeeUnderwater = Ver a través del agua al bucear
-RotateKey = Girar el mapa local (mantener)
 HintRotate = Girar
 HintReset = Restablecer vista
 RotateInvertX = Invertir giro (izquierda / derecha)
 RotateInvertY = Invertir inclinación (arriba / abajo)
 RotateSpeed = Sensibilidad de giro
-SecFrameBeam = Marco y rayos
 FrameColor = Color del marco (blanco: original)
 BeamColor = Color del rayo de misión
 BeamWidth = Grosor del rayo
@@ -176,4 +172,3 @@ FogNoise = Irregularidad del borde
 HintMove = Mover
 HintZoom = Zoom
 CompassSize = Tamaño de las letras de la brújula
-RightStick = (mando: stick derecho)

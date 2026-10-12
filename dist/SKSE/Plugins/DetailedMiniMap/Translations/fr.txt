@@ -2,7 +2,6 @@
 ; Key = text, UTF-8. A missing key falls back to en.txt, then to the key itself.
 ; Name is how the language is listed in the menu.
 
-Name = Français
 Intro = Une carte 3D détaillée construite à partir des vrais maillages du monde : sol, maisons, escaliers, rochers, mobilier.
 Language = Langue
 Enabled = Carte activée
@@ -98,7 +97,6 @@ Legend = Légende
 Unbind = Délier
 IconStyle = Style des icônes
 ToggleHold = Afficher seulement tant que la touche est enfoncée
-MinimapFrame = Cadre
 BeamNearest = Un seul rayon, vers la quête la plus proche (désactivé : un rayon par quête)
 HideEmpty = Masquer les conteneurs vides
 GroupIcons = Regrouper les icônes proches
@@ -124,13 +122,11 @@ ShowOutside = Seulement à l'extérieur
 LootHeight = Hauteur du butin (intérieur)
 AllHeights = Tous les étages
 SeeUnderwater = Voir à travers l'eau en plongée
-RotateKey = Faire pivoter la carte locale (maintenir)
 HintRotate = Pivoter
 HintReset = Réinitialiser la vue
 RotateInvertX = Inverser la rotation (gauche / droite)
 RotateInvertY = Inverser l'inclinaison (haut / bas)
 RotateSpeed = Sensibilité de rotation
-SecFrameBeam = Cadre et rayons
 FrameColor = Couleur du cadre (blanc : d'origine)
 BeamColor = Couleur du rayon de quête
 BeamWidth = Épaisseur du rayon
@@ -176,4 +172,3 @@ FogNoise = Bord irrégulier
 HintMove = Déplacer
 HintZoom = Zoom
 CompassSize = Taille des lettres de la boussole
-RightStick = (manette : stick droit)

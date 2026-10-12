@@ -2,7 +2,6 @@
 ; Key = text, UTF-8. A missing key falls back to en.txt, then to the key itself.
 ; Name is how the language is listed in the menu.
 
-Name = Italiano
 Intro = Una mappa 3D dettagliata costruita con le vere mesh del mondo: terreno, case, scale, rocce, mobili.
 Language = Lingua
 Enabled = Mappa attiva
@@ -98,7 +97,6 @@ Legend = Legenda
 Unbind = Rimuovi
 IconStyle = Stile delle icone
 ToggleHold = Mostra solo mentre il tasto è premuto
-MinimapFrame = Cornice
 BeamNearest = Un solo raggio, verso la missione più vicina (disattivato: un raggio per missione)
 HideEmpty = Nascondi i contenitori vuoti
 GroupIcons = Raggruppa le icone vicine
@@ -124,13 +122,11 @@ ShowOutside = Solo all'aperto
 LootHeight = Altezza del bottino (al chiuso)
 AllHeights = Tutti i piani
 SeeUnderwater = Vedere attraverso l'acqua in immersione
-RotateKey = Ruota la mappa locale (tieni premuto)
 HintRotate = Ruota
 HintReset = Ripristina vista
 RotateInvertX = Inverti rotazione (sinistra / destra)
 RotateInvertY = Inverti inclinazione (su / giù)
 RotateSpeed = Sensibilità rotazione
-SecFrameBeam = Cornice e raggi
 FrameColor = Colore cornice (bianco: originale)
 BeamColor = Colore raggio missione
 BeamWidth = Spessore raggio
@@ -176,4 +172,3 @@ FogNoise = Irregolarità bordo
 HintMove = Sposta
 HintZoom = Zoom
 CompassSize = Dimensione lettere bussola
-RightStick = (gamepad: levetta destra)

@@ -64,11 +64,7 @@ namespace Settings
         std::uint32_t localMapKeyPad = 268;   // ...and on the gamepad (both work; 0 = none): D-pad left
         std::uint32_t localMapModPad = 0;
         bool          localMapHold = false;  // the local map open only while its key is held (else the key opens and closes it)
-        // the local map turned and tilted while this is held (the mouse, or the gamepad's left stick): 257 = the right mouse button
-        std::uint32_t rotateKey = 257;
-        std::uint32_t rotateMod = 0;
-        std::uint32_t rotateKeyPad = 0;      // ...and on the gamepad (0 = none: its right stick turns the map without a key)
-        std::uint32_t rotateModPad = 0;
+        // the local map turned and tilted: the right mouse button held (the gamepad: its right stick)
         bool          rotateInvertX = false;  // the turn the other way round (left / right)
         bool          rotateInvertY = false;  // the tilt the other way round (up / down)
         float         rotateSpeed = 1.0f;     // how fast it turns (0.2 .. 3)

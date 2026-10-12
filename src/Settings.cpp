@@ -252,10 +252,6 @@ namespace Settings
             a_f("Map", "LocalMapKeyPad", m.localMapKeyPad);
             a_f("Map", "LocalMapModPad", m.localMapModPad);
             a_f("Map", "LocalMapHold", m.localMapHold);
-            a_f("Map", "RotateKey", m.rotateKey);
-            a_f("Map", "RotateMod", m.rotateMod);
-            a_f("Map", "RotateKeyPad", m.rotateKeyPad);
-            a_f("Map", "RotateModPad", m.rotateModPad);
             a_f("Map", "RotateInvertX", m.rotateInvertX);
             a_f("Map", "RotateInvertY", m.rotateInvertY);
             a_f("Map", "RotateSpeed", m.rotateSpeed, 0.2f, 3.0f);
@@ -332,16 +328,13 @@ namespace Settings
         Each(Reader{ true }, map);
         // an ini from before the gamepad had binds of its own: the defaults where it has none (once - unbound later
         // stays unbound)
-        // the local map turns by the right mouse button, or the gamepad's right stick: no bind of its own (an older ini's ignored)
-        map.rotateKey = 257;
-        map.rotateMod = map.rotateKeyPad = map.rotateModPad = 0;
         if (!map.padBinds) {
             const MapSettings d;
             const std::pair<std::uint32_t*, std::uint32_t*> slots[] = { { &map.toggleKeyPad, &map.toggleModPad }, { &map.beamKeyPad, &map.beamModPad },
-                { &map.localMapKeyPad, &map.localMapModPad }, { &map.rotateKeyPad, &map.rotateModPad }, { &map.zoomInKeyPad, &map.zoomInModPad },
+                { &map.localMapKeyPad, &map.localMapModPad }, { &map.zoomInKeyPad, &map.zoomInModPad },
                 { &map.zoomOutKeyPad, &map.zoomOutModPad } };
             const std::pair<std::uint32_t, std::uint32_t> wanted[] = { { d.toggleKeyPad, d.toggleModPad }, { d.beamKeyPad, d.beamModPad },
-                { d.localMapKeyPad, d.localMapModPad }, { d.rotateKeyPad, d.rotateModPad }, { d.zoomInKeyPad, d.zoomInModPad }, { d.zoomOutKeyPad, d.zoomOutModPad } };
+                { d.localMapKeyPad, d.localMapModPad }, { d.zoomInKeyPad, d.zoomInModPad }, { d.zoomOutKeyPad, d.zoomOutModPad } };
             for (std::size_t i = 0; i < std::size(slots); ++i) {
                 if (*slots[i].first == 0) {
                     *slots[i].first = wanted[i].first;

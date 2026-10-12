@@ -2,7 +2,6 @@
 ; Key = text, UTF-8. A missing key falls back to en.txt, then to the key itself.
 ; Name is how the language is listed in the menu.
 
-Name = Polski
 Intro = Szczegółowa mapa 3D z prawdziwych siatek świata: teren, domy, schody, skały, meble.
 Language = Język
 Enabled = Mapa włączona
@@ -98,7 +97,6 @@ Legend = Legenda
 Unbind = Usuń
 IconStyle = Styl ikon
 ToggleHold = Pokazuj tylko, gdy klawisz jest wciśnięty
-MinimapFrame = Ramka
 BeamNearest = Jeden promień, do najbliższego zadania (wył.: promień do każdego zadania)
 HideEmpty = Ukrywaj puste pojemniki
 GroupIcons = Łącz bliskie ikony
@@ -124,13 +122,11 @@ ShowOutside = Tylko na zewnątrz
 LootHeight = Zakres wysokości łupów (wnętrza)
 AllHeights = Wszystkie piętra
 SeeUnderwater = Widok przez wodę podczas nurkowania
-RotateKey = Obracaj mapę lokalną (przytrzymaj)
 HintRotate = Obróć
 HintReset = Resetuj widok
 RotateInvertX = Odwróć obrót (lewo / prawo)
 RotateInvertY = Odwróć pochylenie (góra / dół)
 RotateSpeed = Czułość obrotu
-SecFrameBeam = Ramka i promienie
 FrameColor = Kolor ramki (biały: bez zmian)
 BeamColor = Kolor promienia zadania
 BeamWidth = Grubość promienia
@@ -176,4 +172,3 @@ FogNoise = Nierówność krawędzi
 HintMove = Przesuń
 HintZoom = Powiększenie
 CompassSize = Rozmiar liter kompasu
-RightStick = (pad: prawa gałka)

@@ -2,7 +2,6 @@
 ; Key = text, UTF-8. A missing key falls back to en.txt, then to the key itself.
 ; Name is how the language is listed in the menu.
 
-Name = 日本語
 Intro = 世界の実際のメッシュから作られた詳細な3Dマップ：地面、家、階段、岩、家具。
 Language = 言語
 Enabled = マップを有効化
@@ -98,7 +97,6 @@ Legend = 凡例
 Unbind = 解除
 IconStyle = アイコンのスタイル
 ToggleHold = キーを押している間だけ表示
-MinimapFrame = 枠
 BeamNearest = ビームは最も近いクエストへの1本のみ（オフ: クエストごとに1本）
 HideEmpty = 空のコンテナを隠す
 GroupIcons = 近くのアイコンをまとめる
@@ -124,13 +122,11 @@ ShowOutside = 屋外のみ
 LootHeight = 戦利品の高さ範囲（屋内）
 AllHeights = すべての階
 SeeUnderwater = 潜水中は水を透かして見る
-RotateKey = ローカルマップを回転（長押し）
 HintRotate = 回転
 HintReset = 視点をリセット
 RotateInvertX = 回転を反転（左 / 右）
 RotateInvertY = 傾きを反転（上 / 下）
 RotateSpeed = 回転の感度
-SecFrameBeam = 枠とビーム
 FrameColor = 枠の色（白：そのまま）
 BeamColor = クエストビームの色
 BeamWidth = ビームの太さ
@@ -176,4 +172,3 @@ FogNoise = 縁のノイズ
 HintMove = 移動
 HintZoom = ズーム
 CompassSize = 方位の文字サイズ
-RightStick = （ゲームパッド：右スティック）

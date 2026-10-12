@@ -48,6 +48,7 @@ namespace MiniMap
         bool legendHeld = false;    // ...pressed on the legend: no dragging the map with it
         int  wheel = 0;          // wheel steps since the last map update (up: +)
         constexpr std::uint32_t kPadLT = 280, kPadRT = 281, kPadRS = 273;  // the gamepad's triggers, the right stick pressed (266 + their index)
+        constexpr std::uint32_t kRotateKey = 257;  // the right mouse button: held, the local map turns and tilts with the mouse
         std::pair<float, float> leftStick{}, rightStick{};  // the gamepad's sticks (the local map: moved, turned)
         std::atomic_bool        padInUse = false;  // the gamepad touched last (not the keyboard or the mouse): its keys shown
         // the gamepad on the local map's legend: the d-pad walks it (0 the fold button, 1 .. the kinds, then the buttons' row),
@@ -2211,8 +2212,7 @@ namespace MiniMap
             learn(local.gainY, cdy, rawY);
             // the rotate key held: the mouse (or the right stick, alone) turns the map round its middle and tilts it, nothing moves
             const auto stick = [](float a_v) { return std::abs(a_v) > 0.15f ? a_v : 0.0f; };
-            const bool keyTurning = turnHeld && ((s.rotateKey != 0 && Held(s.rotateKey) && (s.rotateMod == 0 || Held(s.rotateMod))) ||
-                                                    (s.rotateKeyPad != 0 && Held(s.rotateKeyPad) && (s.rotateModPad == 0 || Held(s.rotateModPad))));
+            const bool keyTurning = turnHeld && Held(kRotateKey);
             // the gamepad's right stick turns it (no key held), as the mouse does with its key
             const bool padTurning = stick(rightStick.first) != 0.0f || stick(rightStick.second) != 0.0f;
             const bool turning = keyTurning || padTurning;
@@ -2723,12 +2723,10 @@ namespace MiniMap
             if (!font) {
                 return;
             }
-            const auto& s = Settings::Map();
-            const auto  turn = s.rotateKey != 0 ? Settings::BindName(s.rotateKey, s.rotateMod) : s.rotateKeyPad != 0 ? Settings::BindName(s.rotateKeyPad, s.rotateModPad) : std::string();
+            const auto  turn = Settings::BindName(kRotateKey, 0);
             const auto  text = padInUse ? std::format("{}  {}        LS  {}        RS  {}        LT / RT  {}        R3  {}        B  {}", PadWorldKey(), Lang::T(Lang::S::HintWorld),
                                                          Lang::T(Lang::S::HintMove), Lang::T(Lang::S::HintRotate), Lang::T(Lang::S::HintZoom), Lang::T(Lang::S::HintReset), Lang::T(Lang::S::HintClose)) :
-                              turn.empty() ? std::format("M  {}        Esc  {}", Lang::T(Lang::S::HintWorld), Lang::T(Lang::S::HintClose)) :
-                                              std::format("M  {}        {}  {}        R  {}        Esc  {}", Lang::T(Lang::S::HintWorld), turn, Lang::T(Lang::S::HintRotate), Lang::T(Lang::S::HintReset), Lang::T(Lang::S::HintClose));
+                              std::format("M  {}        {}  {}        R  {}        Esc  {}", Lang::T(Lang::S::HintWorld), turn, Lang::T(Lang::S::HintRotate), Lang::T(Lang::S::HintReset), Lang::T(Lang::S::HintClose));
             const float base = ImGui::GetFontSize();
             const float size = 24.0f * a_k;
             const auto  ts = ImGui::CalcTextSize(text.c_str());
@@ -3167,7 +3165,7 @@ namespace MiniMap
                         }
                     }
                     // the local map: its rotate key held turns it, R puts it back
-                    if (code != 0 && (code == s.rotateKey || code == s.rotateKeyPad)) {
+                    if (code == kRotateKey) {
                         turnHeld = local.open && button->IsPressed();
                     }
                     if (local.open && (code == 19 || code == kPadRS) && button->IsDown() && !captureSlot) {

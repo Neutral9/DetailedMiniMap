@@ -2,7 +2,6 @@
 ; Key = text, UTF-8. A missing key falls back to en.txt, then to the key itself.
 ; Name is how the language is listed in the menu.
 
-Name = 中文（繁體）
 Intro = 以世界真實網格構成的詳細 3D 地圖：地面、房屋、樓梯、岩石、家具。
 Language = 語言
 Enabled = 啟用地圖
@@ -98,7 +97,6 @@ Legend = 圖例
 Unbind = 解除綁定
 IconStyle = 圖示風格
 ToggleHold = 僅在按住按鍵時顯示
-MinimapFrame = 邊框
 BeamNearest = 只有一道光束，指向最近的任務（關閉：每個任務一道）
 HideEmpty = 隱藏空容器
 GroupIcons = 合併相近的圖示
@@ -124,13 +122,11 @@ ShowOutside = 僅室外
 LootHeight = 戰利品高度範圍（室內）
 AllHeights = 所有樓層
 SeeUnderwater = 潛水時可看穿水面
-RotateKey = 旋轉區域地圖（按住）
 HintRotate = 旋轉
 HintReset = 重設視角
 RotateInvertX = 反轉旋轉（左 / 右）
 RotateInvertY = 反轉傾斜（上 / 下）
 RotateSpeed = 旋轉靈敏度
-SecFrameBeam = 邊框與光束
 FrameColor = 邊框顏色（白色：原樣）
 BeamColor = 任務光束顏色
 BeamWidth = 光束寬度
@@ -176,4 +172,3 @@ FogNoise = 邊緣雜訊
 HintMove = 移動
 HintZoom = 縮放
 CompassSize = 方位字母大小
-RightStick = （手把：右搖桿）
