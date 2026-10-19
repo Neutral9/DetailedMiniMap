@@ -1,6 +1,7 @@
 #include "Menu.h"
 
 #include "Icons.h"
+#include "Fog.h"
 #include "Lang.h"
 #include "MapMesh.h"
 #include "MiniMap.h"
@@ -246,11 +247,15 @@ namespace Menu
             Slider(S::IconRange, m.iconRange, 0.0f, 20000.0f, m.iconRange > 0.0f ? "%.0f" : Lang::T(S::Everywhere));
             Slider(S::LootHeight, m.lootHeight, 0.0f, 1000.0f, m.lootHeight > 0.0f ? "%.0f" : Lang::T(S::AllHeights));
             Check(Lang::L(S::HideEmpty).c_str(), m.hideEmpty);
+            Check(Lang::L(S::HideSearched).c_str(), m.hideSearched);
             Check(Lang::L(S::GroupIcons).c_str(), m.groupIcons);
             {
                 const char* detect[] = { Lang::T(S::DetectOff), Lang::T(S::DetectEnemies), Lang::T(S::DetectAll) };
                 if (ImGui::Combo(Lang::L(S::DetectOnly).c_str(), &m.detectOnly, detect, 3)) {
                     Settings::Save();
+                }
+                if (m.detectOnly != 0) {
+                    Check(Lang::L(S::DetectFighting).c_str(), m.detectFighting);
                 }
             }
             // four columns, as wide as the longest name needs (a checkbox and a gap before it)
@@ -272,6 +277,9 @@ namespace Menu
             ImGui::SeparatorText(Lang::T(S::SecCut));
             Check(Lang::L(S::CutCover).c_str(), m.cut);
             Slider(S::CutHeight, m.cutHeight, 80.0f, 1000.0f, "%.0f");
+            Check(Lang::L(S::CutUnderground).c_str(), m.cutUnderground);
+            Check(Lang::L(S::CutOutside).c_str(), m.cutOutside);
+            Slider(S::CutHeightOutside, m.cutHeightOutside, 200.0f, 5000.0f, "%.0f");
 
             ImGui::SeparatorText(Lang::T(S::SecQuests));
             Check(Lang::L(S::QuestBeam).c_str(), m.questBeam);
@@ -287,10 +295,22 @@ namespace Menu
                 Slider(S::FogRadius, m.fogRadius, 500.0f, 10000.0f, "%.0f");
                 Slider(S::FogRadiusInside, m.fogRadiusInside, 200.0f, 5000.0f, "%.0f");
                 Check(Lang::L(S::FogHideIcons).c_str(), m.fogHideIcons);
+                // all that was seen forgotten - a second click within a few seconds does it (a first one only asks)
+                static auto asked = std::chrono::steady_clock::time_point{};
+                const bool  asking = std::chrono::steady_clock::now() - asked < std::chrono::seconds(4);
+                if (ImGui::Button(std::format("{}###fogreset", Lang::T(asking ? S::FogResetConfirm : S::FogReset)).c_str())) {
+                    if (asking) {
+                        Fog::Clear();
+                        asked = {};
+                    } else {
+                        asked = std::chrono::steady_clock::now();
+                    }
+                }
             }
 
             ImGui::SeparatorText(Lang::T(S::SecDebug));
             Check(Lang::L(S::DebugLog).c_str(), m.debugLog);
+            Check(Lang::L(S::DebugColours).c_str(), m.debugColours);
 
             ImGui::Separator();
             if (ImGui::Button(Lang::L(S::ResetMap).c_str())) {
@@ -388,6 +408,19 @@ namespace Menu
             }
             Check(Lang::L(S::PointerCamera).c_str(), m.pointerCamera);
 
+            ImGui::SeparatorText(Lang::T(S::SecZone));
+            Check(Lang::L(S::ZoneName).c_str(), m.zoneName);
+            if (m.zoneName) {
+                int         place = m.zoneAbove ? 1 : 0;
+                const char* places[] = { Lang::T(S::ZoneBelow), Lang::T(S::ZoneAbove) };
+                if (ImGui::Combo(Lang::L(S::ZonePlace).c_str(), &place, places, 2)) {
+                    m.zoneAbove = place == 1;
+                    Settings::Save();
+                }
+                Slider(S::ZoneSize, m.zoneSize, 10.0f, 48.0f, "%.0f");
+                Color(Lang::L(S::ZoneColor).c_str(), m.zoneColor);
+            }
+
             ImGui::SeparatorText(Lang::T(S::SecPosition));
             {
                 const char* corners[] = { Lang::T(S::TopLeft), Lang::T(S::TopRight), Lang::T(S::BottomLeft), Lang::T(S::BottomRight), Lang::T(S::Centre) };
@@ -457,6 +490,7 @@ namespace Menu
             if (l.water && colour) {
                 Color(Lang::L(S::WaterColor).c_str(), l.waterColor);
             }
+            Check(Lang::L(S::DistantLand).c_str(), l.distant);
 
             ImGui::SeparatorText(Lang::T(S::SecFog));
             Color(Lang::L(S::FogColor).c_str(), l.fogColor);
@@ -469,6 +503,7 @@ namespace Menu
             Slider(S::FadeTime, l.fadeTime, 0.0f, 3.0f, "%.2f");
             if (ImGui::Button(Lang::L(S::ResetLook).c_str())) {
                 Settings::ResetLook();
+                Icons::UseStyle(Settings::Map().look.iconStyle);
                 chosen = Settings::kDefaultPreset;
             }
         }

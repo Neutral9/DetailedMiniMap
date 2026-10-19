@@ -87,12 +87,13 @@ namespace Settings
                 }
             }
 
+            // the last file that has the key - empty too: "FrameStyle=" is the drawn frame, said over an earlier file's
             const std::string* Find(const char* a_section, const char* a_key) const
             {
                 const auto         key = Lower(a_section) + '\n' + Lower(a_key);
                 const std::string* found = nullptr;
                 for (const auto& file : files) {
-                    if (const auto it = file.find(key); it != file.end() && !it->second.empty()) {
+                    if (const auto it = file.find(key); it != file.end()) {
                         found = &it->second;
                     }
                 }
@@ -102,7 +103,7 @@ namespace Settings
             float Number(const char* a_section, const char* a_key, float a_default) const
             {
                 const auto text = Find(a_section, a_key);
-                if (!text) {
+                if (!text || text->empty()) {  // a number left empty: as it was
                     return a_default;
                 }
                 try {
@@ -172,22 +173,8 @@ namespace Settings
 
             void Write() const
             {
-                std::string text = "; Detailed MiniMap - your settings (the in-game menu writes this file; it overrides DetailedMiniMap.ini)\n";
-                std::vector<std::string> sections;
-                for (const auto& [section, line] : lines) {
-                    if (std::ranges::find(sections, section) == sections.end()) {
-                        sections.push_back(section);
-                    }
-                }
-                for (const auto& section : sections) {
-                    text += std::format("\n[{}]\n", section);
-                    for (const auto& [s, line] : lines) {
-                        if (s == section) {
-                            text += line + '\n';
-                        }
-                    }
-                }
-                const auto    path = IniPath("DetailedMiniMap_User.ini");
+                const std::string text = "; Detailed MiniMap - your settings (the in-game menu writes this file; it overrides DetailedMiniMap.ini)\n" + Text();
+                const auto        path = IniPath("DetailedMiniMap_User.ini");
                 std::ofstream file(path, std::ios::binary | std::ios::trunc);
                 if (!file || !file.write(text.data(), static_cast<std::streamsize>(text.size()))) {
                     logger::warn("ini: {} could not be written", path.string());
@@ -218,10 +205,17 @@ namespace Settings
             a_f("Map", "DynamicZoom", m.dynamicZoom);
             a_f("Map", "DynamicZoomStrength", m.dynamicZoomStrength, 0.25f, 2.0f);
             a_f("Map", "DetectOnly", m.detectOnly, 0, 2);
+            a_f("Map", "DetectFighting", m.detectFighting);
             a_f("Map", "MinimapRound", m.minimapRound);
             a_f("Map", "MinimapCorner", m.minimapCorner, 0.0f, 150.0f);
             a_f("Map", "MinimapFrame", m.minimapFrame);
             a_f("Map", "PointerCamera", m.pointerCamera);
+            a_f("Map", "ZoneName", m.zoneName);
+            a_f("Map", "ZoneAbove", m.zoneAbove);
+            a_f("Map", "ZoneSize", m.zoneSize, 10.0f, 48.0f);
+            a_f("Map", "ZoneR", m.zoneColor[0], 0.0f, 1.0f);
+            a_f("Map", "ZoneG", m.zoneColor[1], 0.0f, 1.0f);
+            a_f("Map", "ZoneB", m.zoneColor[2], 0.0f, 1.0f);
             a_f("Map", "Anchor", m.anchor, 0, 4);
             a_f("Map", "OffsetX", m.offsetX, -2000.0f, 2000.0f);
             a_f("Map", "OffsetY", m.offsetY, -2000.0f, 2000.0f);
@@ -232,6 +226,7 @@ namespace Settings
             a_f("Map", "LootHeight", m.lootHeight, 0.0f, 2000.0f);
             a_f("Map", "MinimapOpacity", m.minimapOpacity, 0.1f, 1.0f);
             a_f("Map", "HideEmpty", m.hideEmpty);
+            a_f("Map", "HideSearched", m.hideSearched);
             a_f("Map", "GroupIcons", m.groupIcons);
             for (std::size_t i = 0; i < m.show.size(); ++i) {
                 const std::string key = std::string("Show_") + Icons::File(static_cast<Icons::Kind>(i));
@@ -239,6 +234,9 @@ namespace Settings
             }
             a_f("Map", "Cut", m.cut);
             a_f("Map", "CutHeight", m.cutHeight, 80.0f, 2000.0f);
+            a_f("Map", "CutUnderground", m.cutUnderground);
+            a_f("Map", "CutOutside", m.cutOutside);
+            a_f("Map", "CutHeightOutside", m.cutHeightOutside, 200.0f, 5000.0f);
             a_f("Map", "QuestBeam", m.questBeam);
             a_f("Map", "BeamNearest", m.beamNearest);
             a_f("Map", "DestinationBeam", m.destinationBeam);
@@ -273,7 +271,9 @@ namespace Settings
             a_f("Map", "FogRadiusInside", m.fogRadiusInside, 200.0f, 5000.0f);
             a_f("Map", "FogHideIcons", m.fogHideIcons);
             a_f("Map", "DebugLog", m.debugLog);
+            a_f("Map", "DebugColours", m.debugColours);
             a_f("Map", "PadBinds", m.padBinds);
+            a_f("Map", "PadBinds2", m.padBinds2);
 
             auto& l = m.look;
             a_f("MapLook", "Grid", l.grid);
@@ -291,6 +291,7 @@ namespace Settings
             a_f("MapLook", "RoadWidth", l.roadWidth, 1.0f, 3.0f);
             a_f("MapLook", "Water", l.water);
             a_f("MapLook", "SeeUnderwater", l.seeUnderwater);
+            a_f("MapLook", "DistantLand", l.distant);
             a_f("MapLook", "Style", l.style, 0, 1);
             a_f("MapLook", "IconStyle", l.iconStyle);
             a_f("MapLook", "FrameStyle", l.frameStyle);
@@ -328,13 +329,13 @@ namespace Settings
         Each(Reader{ true }, map);
         // an ini from before the gamepad had binds of its own: the defaults where it has none (once - unbound later
         // stays unbound)
+        const MapSettings                                d;
+        const std::pair<std::uint32_t*, std::uint32_t*> slots[] = { { &map.toggleKeyPad, &map.toggleModPad }, { &map.beamKeyPad, &map.beamModPad },
+            { &map.localMapKeyPad, &map.localMapModPad }, { &map.zoomInKeyPad, &map.zoomInModPad },
+            { &map.zoomOutKeyPad, &map.zoomOutModPad } };
+        const std::pair<std::uint32_t, std::uint32_t>   wanted[] = { { d.toggleKeyPad, d.toggleModPad }, { d.beamKeyPad, d.beamModPad },
+            { d.localMapKeyPad, d.localMapModPad }, { d.zoomInKeyPad, d.zoomInModPad }, { d.zoomOutKeyPad, d.zoomOutModPad } };
         if (!map.padBinds) {
-            const MapSettings d;
-            const std::pair<std::uint32_t*, std::uint32_t*> slots[] = { { &map.toggleKeyPad, &map.toggleModPad }, { &map.beamKeyPad, &map.beamModPad },
-                { &map.localMapKeyPad, &map.localMapModPad }, { &map.zoomInKeyPad, &map.zoomInModPad },
-                { &map.zoomOutKeyPad, &map.zoomOutModPad } };
-            const std::pair<std::uint32_t, std::uint32_t> wanted[] = { { d.toggleKeyPad, d.toggleModPad }, { d.beamKeyPad, d.beamModPad },
-                { d.localMapKeyPad, d.localMapModPad }, { d.zoomInKeyPad, d.zoomInModPad }, { d.zoomOutKeyPad, d.zoomOutModPad } };
             for (std::size_t i = 0; i < std::size(slots); ++i) {
                 if (*slots[i].first == 0) {
                     *slots[i].first = wanted[i].first;
@@ -342,6 +343,19 @@ namespace Settings
                 }
             }
             map.padBinds = true;
+            Save();
+        }
+        // the gamepad's defaults moved off the buttons the game uses (D-pad down held with one): an ini still on the old
+        // ones (the D-pad, the triggers alone) takes the new (once - what was bound by hand stays)
+        if (!map.padBinds2) {
+            const std::uint32_t old[] = { 269, 266, 268, 281, 280 };
+            for (std::size_t i = 0; i < std::size(slots); ++i) {
+                if (*slots[i].first == old[i] && *slots[i].second == 0) {
+                    *slots[i].first = wanted[i].first;
+                    *slots[i].second = wanted[i].second;
+                }
+            }
+            map.padBinds2 = true;
             Save();
         }
         ApplyLog();
@@ -389,6 +403,10 @@ namespace Settings
             a_to.compass = a_from.compass;
             a_to.compassSize = a_from.compassSize;
             a_to.pointerCamera = a_from.pointerCamera;
+            a_to.zoneName = a_from.zoneName;
+            a_to.zoneAbove = a_from.zoneAbove;
+            a_to.zoneSize = a_from.zoneSize;
+            std::copy(std::begin(a_from.zoneColor), std::end(a_from.zoneColor), a_to.zoneColor);
             a_to.anchor = a_from.anchor;
             a_to.offsetX = a_from.offsetX;
             a_to.offsetY = a_from.offsetY;
@@ -424,14 +442,12 @@ namespace Settings
 
     void ResetLook()
     {
-        // the map's style, the icons' and the frame stay (chosen, not tuned)
-        const int  style = map.look.style;
-        const auto icons = map.look.iconStyle;
-        const auto frame = map.look.frameStyle;
-        CopyLookPage(map, Defaults());
-        map.look.style = style;
-        map.look.iconStyle = icons;
-        map.look.frameStyle = frame;
+        // all of the page, its styles too (as the Default preset has it)
+        const auto d = Defaults();
+        {
+            std::scoped_lock text(textLock);
+            CopyLookPage(map, d);
+        }
         Save();
     }
 
@@ -465,7 +481,7 @@ namespace Settings
         bool Personal(std::string_view a_key)
         {
             const auto key = Lower(a_key);
-            return key == "language" || key == "visible" || key == "legendopen" || key == "debuglog" || key == "padbinds" || key == "needitem" || key == "needitemid" || key == "needmapmod" || key.ends_with("key") ||
+            return key == "language" || key == "visible" || key == "legendopen" || key == "debuglog" || key == "debugcolours" || key == "padbinds" || key == "padbinds2" || key == "needitem" || key == "needitemid" || key == "needmapmod" || key.ends_with("key") ||
                    key.ends_with("mod") || key.ends_with("keypad") || key.ends_with("modpad");
         }
 

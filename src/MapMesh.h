@@ -27,6 +27,7 @@ namespace MapMesh
         float        rows[4][4]{};  // world point -> clip space
         RE::NiPoint3 player;
         float        cut = 250.0f;     // geometry this far above the character's feet is cut away
+        bool         cutObjects = false;  // the cut takes the objects only (outside: the landscape stays)
         float        range = 5000.0f;  // meshes further than this from the character are not drawn
         RE::FormID   space = 0;
         // the look (Settings::Map().look): rgb * brightness and opacity; grid size, contour step (0 = off), line
@@ -37,6 +38,7 @@ namespace MapMesh
         float        roads[4]{};       // rgb, a: 0 no roads, 1 + world units they are widened by
         float        water[4]{};       // rgb, a = 1: water drawn
         float        under[4]{};       // x the water's level, y 0..1 the character under water: the water fades away, what lies below its level is tinted
+        bool         distant = true;   // the game's distant land, water and objects (its LOD) drawn past the loaded cells
         float        fog[4]{};         // the fog of war: rgb, a how thick (0: none on this picture)
         float        fogNoise = 1.0f;  // its edge broken up this much (0: smooth)
     };

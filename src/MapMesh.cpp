@@ -240,8 +240,23 @@ namespace MapMesh
             if (a_shader->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kTreeAnim)) {
                 return true;
             }
-            const auto base = a_owner ? a_owner->GetBaseObject() : nullptr;
-            return base && (base->Is(RE::FormType::Tree) || base->Is(RE::FormType::Flora) || base->Is(RE::FormType::Grass));
+            // no reference: the game's distant objects (LOD) - their see-through cards are the trees' billboards
+            if (!a_owner) {
+                return true;
+            }
+            const auto base = a_owner->GetBaseObject();
+            if (base && (base->Is(RE::FormType::Tree) || base->Is(RE::FormType::Flora) || base->Is(RE::FormType::Grass))) {
+                return true;
+            }
+            // a mod's trees and plants made as statics: by their model's path
+            const auto model = base ? base->As<RE::TESModel>() : nullptr;
+            if (!model || !model->GetModel()) {
+                return false;
+            }
+            std::string path = model->GetModel();
+            std::ranges::transform(path, path.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return std::ranges::any_of(std::array<std::string_view, 7>{ "tree", "plant", "shrub", "bush", "fern", "grass", "foliage" },
+                [&](std::string_view a_word) { return path.contains(a_word); });
         }
 
         // ---- the mesh filter: Data/SKSE/Plugins/DetailedMiniMap/MeshFilter.json - two lists of words looked for in a
@@ -350,6 +365,16 @@ namespace MapMesh
             const auto base = a_owner ? a_owner->GetBaseObject() : nullptr;
             const auto model = base ? base->As<RE::TESModel>() : nullptr;
             return model ? model->GetModel() : nullptr;
+        }
+
+        // a backdrop, not a thing: the editor's markers folder (Markers\BlackPlane01 - a black sheet Bethesda sets behind
+        // the void in caves and keeps, thousands of units across: on a map it covers everything)
+        bool IsBackdrop(std::string_view a_name)
+        {
+            const auto lower = [](char a_c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(a_c))); };
+            std::string name(a_name.size(), ' ');
+            std::ranges::transform(a_name, name.begin(), lower);
+            return name.starts_with("markers\\") || name.starts_with("meshes\\markers\\") || name.find("blackplane") != std::string::npos;
         }
 
         // what the filter's words say of a mesh: the first word found (a kept one before a left-off one), nullptr:
@@ -472,7 +497,7 @@ namespace MapMesh
                 // what the game never draws: triggers, occlusion planes, room and multibound boxes (all a
                 // primitive), markers - their debug shapes are huge flat sheets on a map
                 const auto base = ref->GetBaseObject();
-                if (ref->extraList.HasType<RE::ExtraPrimitive>() || (base && base->IsMarker())) {
+                if (ref->extraList.HasType<RE::ExtraPrimitive>() || (base && base->IsMarker()) || (base && IsBackdrop(ModelOf(ref) ? ModelOf(ref) : ""))) {
                     ++collectStats.markers;
                     Trace(a_obj, a_depth, "a marker or primitive");
                     return;
@@ -487,7 +512,7 @@ namespace MapMesh
                 a_owner = ref;
             }
             // not drawn either: the black planes behind load doors
-            if (a_obj->GetFlags().any(RE::NiAVObject::Flag::kNotVisible) || std::string_view(a_obj->name.c_str()).starts_with("DoorToBlack")) {
+            if (a_obj->GetFlags().any(RE::NiAVObject::Flag::kNotVisible) || std::string_view(a_obj->name.c_str()).starts_with("DoorToBlack") || IsBackdrop(a_obj->name.c_str())) {
                 ++collectStats.markers;
                 Trace(a_obj, a_depth, "not visible");
                 return;
@@ -1107,7 +1132,7 @@ namespace MapMesh
                 return true;
             }
             const auto base = a_ref->GetBaseObject();
-            return !base || base->IsMarker() || IsLooseItem(base);
+            return !base || base->IsMarker() || IsLooseItem(base) || IsBackdrop(ModelOf(a_ref) ? ModelOf(a_ref) : "");
         }
 
         struct RefRec
@@ -1435,6 +1460,22 @@ namespace MapMesh
             return std::string_view(a_obj->name.c_str()).starts_with("Land");
         }
 
+        // the trees' distant look: the game's tree LOD, DynDOLOD's ("treepassthru" billboards, "objpassthru" 3D trees) -
+        // never on the map
+        bool IsLodTree(RE::BSGeometry* a_geom)
+        {
+            std::string name = a_geom->name.c_str();
+            std::ranges::transform(name, name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (name.contains("tree") || name.contains("passthru")) {
+                return true;
+            }
+            if (const auto rtti = a_geom->GetRTTI(); rtti && rtti->GetName() && std::string_view(rtti->GetName()).contains("Tree")) {
+                return true;
+            }
+            const auto& rd = a_geom->GetGeometryRuntimeData();
+            return rd.shaderProperty && rd.shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kTreeAnim);
+        }
+
         void CollectLod(RE::NiAVObject* a_obj, std::vector<RE::BSTriShape*>& a_out, bool a_hidden, int a_depth)
         {
             if (!a_obj || a_depth > 64) {
@@ -1456,7 +1497,7 @@ namespace MapMesh
                 if (tri->worldBound.radius > 0.0f && geom->GetGeometryRuntimeData().rendererData) {
                     a_out.push_back(tri);  // shown or not
                 }
-            } else if (!off) {
+            } else if (!off && !IsLodTree(tri)) {
                 Collect(tri, a_out, a_depth);
             }
         }
@@ -2122,7 +2163,9 @@ namespace MapMesh
             if (now >= sweep.nextCells) {
                 sweep.nextCells = now + kCellsEvery;
                 LookAtCells(a_player, now);
-                LookAtLod(a_player, a_space);
+                if (Settings::Map().look.distant) {
+                    LookAtLod(a_player, a_space);
+                }
             }
             if (now >= sweep.nextPass) {
                 sweep.nextPass = now + kPassEvery;
@@ -2546,16 +2589,15 @@ cbuffer C : register(b0)
     float4 groundLook;    // rgb, a opacity
     float4 geometryLook;
     float4 lines;      // x grid size, y contour step (0 = off), z strength
-    float4 shade;      // x depth shade, y interior, z style (0 colour, 1 vanilla)
+    float4 shade;      // x depth shade, y interior, z style (0 colour, 1 vanilla), w the diagnostics' colours
     float4 occluder;   // the character on this picture: px centre, px radii (z = 0: no occlusion cut)
-    float4 occluder2;  // x: the character's depth on this picture, y: feet height to keep
+    float4 occluder2;  // x: the character's depth on this picture, y: feet height to keep, z: the cut takes the objects only
     float4 timing;     // x now (s), y fade-in time (s)
     float4 roadBox;    // x widened by this many world units, w on
     float4 roadLook;   // rgb
     float4 water;      // rgb, a on
     float4 under;      // x the water's level, y 0..1 the character under it (the water not drawn, what lies below its level tinted)
-    uint4  landCells[8];  // 32 rows of 32 exterior cells (a bit each): their own landscape in - the distant land not drawn there
-    float4 landOrigin;    // x, y: the cell of bit 0 of row 0
+    float4 landOrigin;    // x, y: the cell at texel 0, 0 of the land mask
     float4 fog;           // the fog of war: rgb, a how thick (0: none)
     float4 fogMap;        // xy: the world point at the fog texture's corner, z: world units a texel, w: the edge's noise
     float4 fogView;       // xy: the picture's size (px)
@@ -2566,6 +2608,7 @@ cbuffer K : register(b1)
 };
 Texture2D<float2> roadMask : register(t0);  // per pixel of this picture: a road drawn there, its height
 Texture2D<float>  fogTex : register(t1);    // the fog of war round the character: how far each square was seen
+Texture2D<float>  landMask : register(t2);  // 32 x 32 exterior cells round the character: 1 where their own landscape is in
 
 float Hash(float2 p)
 {
@@ -2752,8 +2795,8 @@ float2 PSRoad(VSOut i) : SV_Target
     if (under.y > 0.5 && i.world.z > under.x - 8.0) {
         discard;  // under water: no roads up on the shore
     }
-    if (i.world.z > player.z + player.w + 60.0) {
-        discard;  // cut away with what stands over the character
+    if (occluder2.z < 0.5 && i.world.z > player.z + player.w + 60.0) {
+        discard;  // cut away with what stands over the character (inside)
     }
     return float2(1.0, i.world.z);
 }
@@ -2764,15 +2807,13 @@ float4 PS(VSOut i) : SV_Target
     // the distant land and water: not where a cell's own landscape is in
     if (i.lod > 0.5) {
         int2 c = int2(floor(w.xy / 4096.0)) - int2(landOrigin.xy);
-        if (all(c >= 0) && all(c < 32)) {
-            uint row = landCells[c.y >> 2][c.y & 3];
-            if ((row >> c.x) & 1u) {
-                discard;
-            }
+        if (all(c >= 0) && all(c < 32) && landMask.Load(int3(c, 0)) > 0.5) {
+            discard;
         }
     }
-    // the cut, 1: inside, everything over the head (a ceiling would hide the whole room)
-    if (w.z > player.z + player.w) {
+    // the cut, 1: inside, everything over the head (a ceiling would hide the whole room); outside the objects only (an
+    // underground world's roof), the landscape and the distant land stay
+    if (w.z > player.z + player.w && (occluder2.z < 0.5 || (kind.x < 0.5 && i.lod < 0.5))) {
         if (i.mark > 0.5) {
             return float4(0.2, 0.4, 1.0, 1.0);  // picked, but cut away over the head: blue
         }
@@ -2819,6 +2860,12 @@ float4 PS(VSOut i) : SV_Target
     float  flat = smoothstep(0.55, 0.85, up);
     float3 L = normalize(float3(-0.45, 0.55, 0.7));
     float  light = 0.55 + 0.6 * abs(dot(n, L));
+    // the diagnostics: each surface coloured by what it is - objects red, the landscape green, water blue, the game's distant
+    // land and objects (LOD) yellow - so a screenshot tells what covers the map
+    if (shade.w > 0.5) {
+        float3 c = i.lod > 0.5 ? float3(1.0, 0.85, 0.1) : kind.x > 1.5 ? float3(0.2, 0.4, 1.0) : kind.x > 0.5 ? float3(0.2, 0.85, 0.3) : float3(0.95, 0.25, 0.2);
+        return float4(c * light, 1.0);
+    }
     // world units per pixel, for lines of a steady width on screen (taken here: no gradients inside branches)
     float3 fw = float3(fwidth(w.x), fwidth(w.y), fwidth(w.z));
     float  pix = max(max(fw.x, fw.y), 1e-4);
@@ -2880,23 +2927,24 @@ float4 PS(VSOut i) : SV_Target
         }
         col = Under(col, w.z, isWater, float3(0.17, 0.20, 0.21));
         col = i.mark > 0.5 ? lerp(col, float3(1.0, 0.1, 0.1), 0.75) : col;  // picked in the console: tinted red, through the same cuts
-        return Fogged(float4(col, look.a * fade * above * (isWater ? 1.0 - under.y : 1.0)), w.xy);
-    }
-    if (isWater) {
-        col = water.rgb * (0.9 + 0.25 * WaterLines(w, pix));
     } else {
-        col = look.rgb * light;
-        col += grid * float3(0.10, 0.15, 0.22) * lines.z;
-        col += contour * float3(0.12, 0.22, 0.30) * lines.z;
-        col = lerp(col, roadLook.rgb * light, roadFill * 0.9);
+        if (isWater) {
+            col = water.rgb * (0.9 + 0.25 * WaterLines(w, pix));
+        } else {
+            col = look.rgb * light;
+            col += grid * float3(0.10, 0.15, 0.22) * lines.z;
+            col += contour * float3(0.12, 0.22, 0.30) * lines.z;
+            col = lerp(col, roadLook.rgb * light, roadFill * 0.9);
+        }
+        // a bright rim where the cut opens things up
+        col += rim * float3(0.35, 0.45, 0.6);
+        col += occRim * float3(0.45, 0.65, 0.85);
+        // below the character it gets darker with depth, above slightly lighter
+        col *= depthMul;
+        col = Under(col, w.z, isWater, water.rgb);
+        col = i.mark > 0.5 ? lerp(col, float3(1.0, 0.1, 0.1), 0.75) : col;
     }
-    // a bright rim where the cut opens things up
-    col += rim * float3(0.35, 0.45, 0.6);
-    col += occRim * float3(0.45, 0.65, 0.85);
-    // below the character it gets darker with depth, above slightly lighter
-    col *= depthMul;
-    col = Under(col, w.z, isWater, water.rgb);
-    col = i.mark > 0.5 ? lerp(col, float3(1.0, 0.1, 0.1), 0.75) : col;
+    // one way out: the fog of war over it (its code once in the shader)
     return Fogged(float4(col, look.a * fade * above * (isWater ? 1.0 - under.y : 1.0)), w.xy);  // water: gone from under it
 }
 )";
@@ -2916,8 +2964,7 @@ float4 PS(VSOut i) : SV_Target
             float roadLook[4];
             float water[4];
             float under[4];
-            std::uint32_t landCells[32];  // a row of 32 exterior cells a uint: their own landscape in (the distant land not drawn there)
-            float         landOrigin[4];  // x, y: the cell of bit 0 of row 0
+            float         landOrigin[4];  // x, y: the cell at texel 0, 0 of the land mask
             float         fog[4];
             float         fogMap[4];
             float         fogView[4];
@@ -2983,8 +3030,16 @@ float4 PS(VSOut i) : SV_Target
             ID3D11BlendState*         fogBlend = nullptr;  // over the empty only: what is drawn stays (it was fogged as drawn)
             ID3D11Texture2D*          fogTex = nullptr;
             ID3D11ShaderResourceView* fogSrv = nullptr;
+            ID3D11Texture2D*          landTex = nullptr;  // 32 x 32 exterior cells round the character: their own landscape in
+            ID3D11ShaderResourceView* landSrv = nullptr;
             Fog::Window               fogWindow;
             std::vector<std::uint8_t> fogTexels;
+            ID3D11Texture2D*          fogProbe = nullptr;  // the detailed log: one texel of the fog read back (staging)
+            bool                      probePending = false;
+            ID3D11Texture2D*          picProbe[2]{};       // the detailed log: each picture read back (staging), to count what it holds
+            int                       picProbeSize[2][2]{};
+            bool                      picPending[2]{};
+            std::string               adapter;             // the GPU, its feature level
         } r;
 
         // the shaders are compiled on a thread of their own as soon as the game's data is loaded (half a second of
@@ -3118,10 +3173,46 @@ float4 PS(VSOut i) : SV_Target
             fd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
             r.fogTexels.assign(static_cast<std::size_t>(Fog::kTex) * Fog::kTex, 0);
             D3D11_SUBRESOURCE_DATA fdata{ r.fogTexels.data(), Fog::kTex, 0 };
-            ok = ok && SUCCEEDED(a_device->CreateTexture2D(&fd, &fdata, &r.fogTex)) && SUCCEEDED(a_device->CreateShaderResourceView(r.fogTex, nullptr, &r.fogSrv));
+            // the cells' mask (the distant land not drawn where a cell's own is in): without it the distant land is drawn everywhere
+            {
+                D3D11_TEXTURE2D_DESC ld = fd;
+                ld.Width = ld.Height = 32;
+                if (FAILED(a_device->CreateTexture2D(&ld, nullptr, &r.landTex)) || FAILED(a_device->CreateShaderResourceView(r.landTex, nullptr, &r.landSrv))) {
+                    logger::warn("map 3d: the land mask could not be made");
+                }
+            }
+            // the fog's texture: without it the map draws on, without the fog
+            if (FAILED(a_device->CreateTexture2D(&fd, &fdata, &r.fogTex)) || FAILED(a_device->CreateShaderResourceView(r.fogTex, nullptr, &r.fogSrv))) {
+                logger::warn("map 3d: the fog of war's texture could not be made: no fog drawn");
+                if (r.fogTex) {
+                    r.fogTex->Release();
+                    r.fogTex = nullptr;
+                }
+            }
 
             r.ready = ok;
-            logger::info("map 3d: renderer {} ({}x MSAA)", ok ? "ready" : "FAILED", r.samples);
+            if (ok) {
+                {
+                    // the GPU and its feature level, for reports from machines the map draws nothing on
+                    IDXGIDevice*  dxgi = nullptr;
+                    IDXGIAdapter* adapter = nullptr;
+                    DXGI_ADAPTER_DESC desc{};
+                    if (SUCCEEDED(a_device->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgi))) && SUCCEEDED(dxgi->GetAdapter(&adapter)) && SUCCEEDED(adapter->GetDesc(&desc))) {
+                        char name[128]{};
+                        WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof(name) - 1, nullptr, nullptr);
+                        r.adapter = std::format("'{}' (vendor {:04X}, device {:04X}, {} MB), feature level {:X}", name, desc.VendorId, desc.DeviceId, desc.DedicatedVideoMemory >> 20,
+                            static_cast<unsigned>(a_device->GetFeatureLevel()));
+                    }
+                    for (IUnknown* p : std::initializer_list<IUnknown*>{ adapter, dxgi }) {
+                        if (p) {
+                            p->Release();
+                        }
+                    }
+                }
+                logger::info("map 3d: renderer ready ({}x MSAA), the fog of war's texture {}", r.samples, r.fogTex ? "made" : "MISSING");
+            } else {
+                logger::warn("map 3d: renderer FAILED - no map picture");
+            }
             return ok;
         }
 
@@ -3182,7 +3273,7 @@ float4 PS(VSOut i) : SV_Target
             ID3D11Buffer*             vsCb = nullptr;
             ID3D11Buffer*             psCb = nullptr;
             ID3D11Buffer*             psCb1 = nullptr;
-            ID3D11ShaderResourceView* psSrv[2]{};
+            ID3D11ShaderResourceView* psSrv[3]{};
             ID3D11RasterizerState*    raster = nullptr;
             D3D11_VIEWPORT            viewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE]{};
             UINT                      viewportCount = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
@@ -3209,7 +3300,7 @@ float4 PS(VSOut i) : SV_Target
                 c->VSGetConstantBuffers(0, 1, &vsCb);
                 c->PSGetConstantBuffers(0, 1, &psCb);
                 c->PSGetConstantBuffers(1, 1, &psCb1);
-                c->PSGetShaderResources(0, 2, psSrv);
+                c->PSGetShaderResources(0, 3, psSrv);
                 c->RSGetState(&raster);
                 c->RSGetViewports(&viewportCount, viewports);
                 c->OMGetRenderTargets(1, &rtv, &dsv);
@@ -3229,13 +3320,13 @@ float4 PS(VSOut i) : SV_Target
                 c->VSSetConstantBuffers(0, 1, &vsCb);
                 c->PSSetConstantBuffers(0, 1, &psCb);
                 c->PSSetConstantBuffers(1, 1, &psCb1);
-                c->PSSetShaderResources(0, 2, psSrv);
+                c->PSSetShaderResources(0, 3, psSrv);
                 c->RSSetState(raster);
                 c->RSSetViewports(viewportCount, viewports);
                 c->OMSetRenderTargets(1, &rtv, dsv);
                 c->OMSetBlendState(blend, blendFactor, sampleMask);
                 c->OMSetDepthStencilState(depth, stencilRef);
-                for (IUnknown* p : std::initializer_list<IUnknown*>{ layout, vb[0], vb[1], ib, vs, ps, gs, vsCb, psCb, psCb1, psSrv[0], psSrv[1], raster, rtv, dsv, blend, depth }) {
+                for (IUnknown* p : std::initializer_list<IUnknown*>{ layout, vb[0], vb[1], ib, vs, ps, gs, vsCb, psCb, psCb1, psSrv[0], psSrv[1], psSrv[2], raster, rtv, dsv, blend, depth }) {
                     if (p) {
                         p->Release();
                     }
@@ -3347,6 +3438,203 @@ float4 PS(VSOut i) : SV_Target
             live.renderUs = live.renderMaxUs = 0;
         }
 
+        // the detailed log: the biggest things on the map round the character, as decoded (the model's extent placed by its
+        // instance) beside the game's own bound - a mesh read wrong lies far bigger than its bound and covers the map
+        void LogBiggest()
+        {
+            const auto player = RE::PlayerCharacter::GetSingleton();
+            if (!player) {
+                return;
+            }
+            const auto at = player->GetPosition();
+            struct Big
+            {
+                float      area = 0.0f, ratio = 0.0f;
+                float      box[6]{};  // as decoded, in the world
+                float      bound[6]{};
+                RE::FormID owner = 0;
+                int        kind = 0;
+                std::string from;
+            };
+            std::vector<Big> all;
+            {
+                std::scoped_lock guard(meshLock);
+                for (const auto& in : instances) {
+                    const auto m = in.model;
+                    if (!m || m->state == kFailed || in.space != mapSpace || m->triangles == 0) {
+                        continue;
+                    }
+                    const float cx = (in.box[0] + in.box[3]) * 0.5f - at.x, cy = (in.box[1] + in.box[4]) * 0.5f - at.y;
+                    if (cx * cx + cy * cy > 30000.0f * 30000.0f) {
+                        continue;
+                    }
+                    Big b;
+                    for (int k = 0; k < 3; ++k) {
+                        b.box[k] = FLT_MAX;
+                        b.box[k + 3] = -FLT_MAX;
+                    }
+                    for (int c = 0; c < 8; ++c) {
+                        const float p[3]{ m->extent[(c & 1) ? 3 : 0], m->extent[(c & 2) ? 4 : 1], m->extent[(c & 4) ? 5 : 2] };
+                        for (int k = 0; k < 3; ++k) {
+                            const float w = in.row[k][0] * p[0] + in.row[k][1] * p[1] + in.row[k][2] * p[2] + in.row[k][3];
+                            b.box[k] = std::min(b.box[k], w);
+                            b.box[k + 3] = std::max(b.box[k + 3], w);
+                        }
+                    }
+                    b.area = (b.box[3] - b.box[0]) * (b.box[4] - b.box[1]);
+                    b.ratio = b.area / std::max((in.box[3] - in.box[0]) * (in.box[4] - in.box[1]), 1.0f);
+                    std::copy(std::begin(in.box), std::end(in.box), b.bound);
+                    b.owner = in.owner;
+                    b.kind = m->kind;
+                    b.from = m->from;
+                    all.push_back(std::move(b));
+                }
+            }
+            const auto line = [&](const Big& a_b) {
+                const auto  ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(a_b.owner);
+                const char* model = ref ? ModelOf(ref) : nullptr;
+                return std::format("\n    {:08X} '{}' mesh '{}' ({}): decoded x {:.0f}..{:.0f} y {:.0f}..{:.0f} z {:.0f}..{:.0f}, the game's bound x {:.0f}..{:.0f} y {:.0f}..{:.0f} z {:.0f}..{:.0f} "
+                                   "- {:.1f} times its bound's area",
+                    a_b.owner, model ? model : "-", a_b.from, a_b.kind == kLand ? "landscape" : a_b.kind == kWater ? "water" : "objects", a_b.box[0], a_b.box[3], a_b.box[1], a_b.box[4],
+                    a_b.box[2], a_b.box[5], a_b.bound[0], a_b.bound[3], a_b.bound[1], a_b.bound[4], a_b.bound[2], a_b.bound[5], a_b.ratio);
+            };
+            std::string text = std::format("map 3d: round the character ({:.0f} {:.0f} {:.0f}), {} things on the map; the biggest as decoded:", at.x, at.y, at.z, all.size());
+            std::ranges::sort(all, [](const Big& a, const Big& b) { return a.area > b.area; });
+            for (std::size_t i = 0; i < all.size() && i < 12; ++i) {
+                text += line(all[i]);
+            }
+            // read far bigger than the game has them (more than 4 times the area): the likely culprits of a covered map
+            std::ranges::sort(all, [](const Big& a, const Big& b) { return a.ratio > b.ratio; });
+            text += "\n  decoded far bigger than their bound:";
+            int odd = 0;
+            for (std::size_t i = 0; i < all.size() && odd < 12 && all[i].ratio > 4.0f; ++i, ++odd) {
+                text += line(all[i]);
+            }
+            if (odd == 0) {
+                text += " none";
+            }
+            logger::info("{}", text);
+        }
+
+        // the detailed log: the fog on the GPU since the last report
+        // the detailed log: what each picture holds - how much of it something was drawn on, and its average colour
+        struct PicDiag
+        {
+            std::atomic<int>   covered = -1;  // per mille of its pixels drawn on (-1: not read yet)
+            std::atomic<int>   rgb = 0;
+            std::atomic<int>   w = 0, h = 0;
+            std::atomic<float> rows[4] = {};  // the view's first row and the depth row's z (NaN: a broken view)
+        } picDiag[2];
+
+        void PictureProbe(ID3D11Device* a_device, ID3D11DeviceContext* a_context, Target& a_t, int a_slot)
+        {
+            auto&       probe = r.picProbe[a_slot];
+            auto&       size = r.picProbeSize[a_slot];
+            auto&       pending = r.picPending[a_slot];
+            if (probe && (size[0] != a_t.width || size[1] != a_t.height)) {
+                probe->Release();
+                probe = nullptr;
+                pending = false;
+            }
+            if (!probe) {
+                D3D11_TEXTURE2D_DESC d{};
+                d.Width = static_cast<UINT>(a_t.width);
+                d.Height = static_cast<UINT>(a_t.height);
+                d.MipLevels = d.ArraySize = 1;
+                d.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                d.SampleDesc.Count = 1;
+                d.Usage = D3D11_USAGE_STAGING;
+                d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                if (FAILED(a_device->CreateTexture2D(&d, nullptr, &probe))) {
+                    return;
+                }
+                size[0] = a_t.width;
+                size[1] = a_t.height;
+            }
+            if (pending) {
+                D3D11_MAPPED_SUBRESOURCE mapped{};
+                if (SUCCEEDED(a_context->Map(probe, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped))) {
+                    std::uint64_t drawn = 0, total = 0, sum[3]{};
+                    for (int y = 0; y < size[1]; y += 4) {
+                        const auto* row = static_cast<const std::uint8_t*>(mapped.pData) + static_cast<std::size_t>(y) * mapped.RowPitch;
+                        for (int x = 0; x < size[0]; x += 4) {
+                            const auto* p = row + x * 4;
+                            ++total;
+                            if (p[3] > 8) {
+                                ++drawn;
+                                sum[0] += p[0], sum[1] += p[1], sum[2] += p[2];
+                            }
+                        }
+                    }
+                    a_context->Unmap(probe, 0);
+                    pending = false;
+                    auto& d = picDiag[a_slot];
+                    d.covered = total ? static_cast<int>(drawn * 1000 / total) : 0;
+                    d.rgb = drawn ? static_cast<int>(((sum[0] / drawn) << 16) | ((sum[1] / drawn) << 8) | (sum[2] / drawn)) : 0;
+                    d.w = size[0];
+                    d.h = size[1];
+                }
+                return;
+            }
+            static std::chrono::steady_clock::time_point next[2]{};
+            if (std::chrono::steady_clock::now() < next[a_slot]) {
+                return;
+            }
+            next[a_slot] = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+            a_context->CopyResource(probe, a_t.resolved);
+            pending = true;
+        }
+
+        struct FogDiag
+        {
+            std::atomic<int> wanted = 0, off = 0, drawn = 0, uploads = 0;
+            std::atomic<int> cpu = -1, gpu = -1;  // the texel under the character: as sent up, as the GPU holds it (-1: not read)
+            std::atomic<int> x = 0, y = 0;        // ...where in the window
+        } fogDiag;
+
+        // the texel under the character read back from the fog's texture, a frame later (no stall): what the shader reads
+        void FogProbe(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const View& a_view)
+        {
+            if (!r.fogProbe) {
+                D3D11_TEXTURE2D_DESC d{};
+                d.Width = d.Height = 1;
+                d.MipLevels = d.ArraySize = 1;
+                d.Format = DXGI_FORMAT_R8_UNORM;
+                d.SampleDesc.Count = 1;
+                d.Usage = D3D11_USAGE_STAGING;
+                d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                if (FAILED(a_device->CreateTexture2D(&d, nullptr, &r.fogProbe))) {
+                    return;
+                }
+            }
+            if (r.probePending) {
+                D3D11_MAPPED_SUBRESOURCE mapped{};
+                if (SUCCEEDED(a_context->Map(r.fogProbe, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped))) {
+                    fogDiag.gpu = *static_cast<const std::uint8_t*>(mapped.pData);
+                    a_context->Unmap(r.fogProbe, 0);
+                    r.probePending = false;
+                }
+                return;
+            }
+            static auto next = std::chrono::steady_clock::now();
+            if (std::chrono::steady_clock::now() < next || r.fogWindow.unit <= 0.0f) {
+                return;
+            }
+            next = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            const int x = static_cast<int>(std::floor(a_view.player.x / r.fogWindow.unit)) - r.fogWindow.ox;
+            const int y = static_cast<int>(std::floor(a_view.player.y / r.fogWindow.unit)) - r.fogWindow.oy;
+            fogDiag.x = x;
+            fogDiag.y = y;
+            if (x < 0 || y < 0 || x >= Fog::kTex || y >= Fog::kTex) {
+                fogDiag.cpu = fogDiag.gpu = -2;  // the character outside the window
+                return;
+            }
+            fogDiag.cpu = r.fogTexels[static_cast<std::size_t>(y) * Fog::kTex + x];
+            const D3D11_BOX box{ static_cast<UINT>(x), static_cast<UINT>(y), 0, static_cast<UINT>(x + 1), static_cast<UINT>(y + 1), 1 };
+            a_context->CopySubresourceRegion(r.fogProbe, 0, 0, 0, 0, r.fogTex, 0, &box);
+            r.probePending = true;
+        }
+
         // the detailed log: every 10 seconds what the map cost and did
         void Report(float a_delta)
         {
@@ -3390,6 +3678,19 @@ float4 PS(VSOut i) : SV_Target
                 perf.since, perf.frames, frames / perf.since, perf.mainMs / frames, perf.mainMax, perf.workMs / frames, perf.workMax, perf.refs, perf.models, perf.passes,
                 redraws, renders, redraws ? renderUs / 1000.0 / redraws : 0.0, renderMaxUs / 1000.0, uploads, placed, triangles / 1000, models.size(), shared, onGpu,
                 bytes >> 20, waiting, failed, queued);
+            logger::info("fog (gpu): texture {}; pictures with the fog {}, without {}; drawn with it {}, {} uploads; the window: space {:08X}, square {} {} at {:.0f} units, version {}; "
+                         "the square under the character ({} {}): sent up {}, the GPU holds {} (-1 not read yet, -2 outside the window)",
+                r.fogTex ? "made" : "MISSING", fogDiag.wanted.exchange(0), fogDiag.off.exchange(0), fogDiag.drawn.exchange(0), fogDiag.uploads.exchange(0), r.fogWindow.space,
+                r.fogWindow.ox, r.fogWindow.oy, r.fogWindow.unit, r.fogWindow.version, fogDiag.x.load(), fogDiag.y.load(), fogDiag.cpu.load(), fogDiag.gpu.load());
+            logger::info("{}", Fog::Report());
+            for (int slot = 0; slot < 2; ++slot) {
+                const auto& d = picDiag[slot];
+                const int   rgb = d.rgb;
+                logger::info("map 3d: the {} picture {}x{}: {} drawn on{} (average colour {:02X}{:02X}{:02X}); its view {:.6f} {:.6f} {:.6f} {:.4f}; the GPU {}", slot ? "local map's" : "minimap's",
+                    d.w.load(), d.h.load(), d.covered < 0 ? std::string("not read yet") : std::format("{:.1f}%", d.covered / 10.0f), d.covered == 0 ? " - NOTHING" : "", (rgb >> 16) & 0xFF,
+                    (rgb >> 8) & 0xFF, rgb & 0xFF, d.rows[0].load(), d.rows[1].load(), d.rows[2].load(), d.rows[3].load(), r.adapter.empty() ? std::string("?") : r.adapter);
+            }
+            LogBiggest();
             perf.since = 0.0f;
             perf.frames = perf.refs = perf.models = perf.passes = 0;
             perf.mainMs = perf.mainMax = perf.workMs = perf.workMax = 0.0;
@@ -3530,7 +3831,7 @@ float4 PS(VSOut i) : SV_Target
         // bigger than a pixel
         const auto visible = [&](const Instance& a_in) {
             const auto m = a_in.model;
-            if (a_in.space != a_view.space || !m || m->state == kFailed || (m->kind == kWater && (a_view.water[3] < 0.5f || a_view.under[1] >= 0.99f))) {
+            if (a_in.space != a_view.space || !m || m->state == kFailed || (!a_view.distant && (a_in.owner == kLodLand || a_in.owner == kLodWater)) || (m->kind == kWater && (a_view.water[3] < 0.5f || a_view.under[1] >= 0.99f))) {
                 return false;
             }
             const auto& b = a_in.box;
@@ -3553,12 +3854,26 @@ float4 PS(VSOut i) : SV_Target
         };
 
         // the fog of war round the character: up where it changed (the window moved: all of it)
-        const bool fogOn = a_view.fog[3] > 0.0f && r.fogTex;
+        // the detailed log: what the pictures did with the fog
+        ++(a_view.fog[3] > 0.0f ? fogDiag.wanted : fogDiag.off);
+        if (Settings::Map().debugLog) {
+            auto& d = picDiag[std::clamp(a_view.slot, 0, 1)];
+            d.rows[0] = a_view.rows[0][0];
+            d.rows[1] = a_view.rows[1][1];
+            d.rows[2] = a_view.rows[2][2];
+            d.rows[3] = a_view.rows[2][3];
+        }
+        const bool fogOn = a_view.fog[3] > 0.0f && r.fogTex && r.fogSrv;
         if (fogOn) {
             int rect[4]{};
+            ++fogDiag.drawn;
             if (Fog::Take(a_view.space, a_view.player.x, a_view.player.y, r.fogWindow, r.fogTexels, rect)) {
                 const D3D11_BOX box{ static_cast<UINT>(rect[0]), static_cast<UINT>(rect[1]), 0, static_cast<UINT>(rect[2]), static_cast<UINT>(rect[3]), 1 };
                 context->UpdateSubresource(r.fogTex, 0, &box, r.fogTexels.data() + static_cast<std::size_t>(rect[1]) * Fog::kTex + rect[0], Fog::kTex, 0);
+                ++fogDiag.uploads;
+            }
+            if (Settings::Map().debugLog) {
+                FogProbe(device, context, a_view);
             }
         }
 
@@ -3572,12 +3887,12 @@ float4 PS(VSOut i) : SV_Target
                 }
             };
             add(&a_view.rows[0][0], 16);
-            const float values[]{ a_view.player.x, a_view.player.y, a_view.player.z, a_view.cut, a_view.range, a_view.fadeTime };
+            const float values[]{ a_view.player.x, a_view.player.y, a_view.player.z, a_view.cut, a_view.cutObjects ? 1.0f : 0.0f, a_view.range, a_view.fadeTime };
             add(values, std::size(values));
             for (const auto* a : { a_view.ground, a_view.geometry, a_view.lines, a_view.shade, a_view.occluder, a_view.occluder2, a_view.roads, a_view.water, a_view.under, a_view.fog }) {
                 add(a, 4);
             }
-            key.insert(key.end(), { static_cast<std::uint32_t>(a_view.width), static_cast<std::uint32_t>(a_view.height), a_view.space, r.roadUploaded });
+            key.insert(key.end(), { static_cast<std::uint32_t>(a_view.width), static_cast<std::uint32_t>(a_view.height), a_view.space, r.roadUploaded, a_view.distant ? 1u : 0u });
             if (fogOn) {
                 key.insert(key.end(), { static_cast<std::uint32_t>(r.fogWindow.version), static_cast<std::uint32_t>(r.fogWindow.ox), static_cast<std::uint32_t>(r.fogWindow.oy),
                                         std::bit_cast<std::uint32_t>(a_view.fogNoise) });
@@ -3647,6 +3962,9 @@ float4 PS(VSOut i) : SV_Target
             guard.unlock();
             ++perf.renders;
             ++live.reused;
+            if (Settings::Map().debugLog) {
+                PictureProbe(device, context, t, std::clamp(a_view.slot, 0, 1));
+            }
             return t.srv;
         }
         // per model its instances on this picture (a model keeps the list of its own: drawn together, nothing sorted)
@@ -3731,6 +4049,7 @@ float4 PS(VSOut i) : SV_Target
         std::memcpy(c.shade, a_view.shade, sizeof(c.shade));
         std::memcpy(c.occluder, a_view.occluder, sizeof(c.occluder));
         std::memcpy(c.occluder2, a_view.occluder2, sizeof(c.occluder2));
+        c.occluder2[2] = a_view.cutObjects ? 1.0f : 0.0f;
         c.timing[0] = now;
         c.timing[1] = fadeTime;
         const bool roadsOn = r.roadCorners > 0 && a_view.roads[3] > 0.0f;
@@ -3753,6 +4072,7 @@ float4 PS(VSOut i) : SV_Target
             const int ox = static_cast<int>(std::floor(a_view.player.x / kCellSize)) - 16, oy = static_cast<int>(std::floor(a_view.player.y / kCellSize)) - 16;
             c.landOrigin[0] = static_cast<float>(ox);
             c.landOrigin[1] = static_cast<float>(oy);
+            std::uint8_t mask[32 * 32]{};
             for (const auto& in : instances) {
                 if (!in.model || in.model->kind != kLand || in.owner == kLodLand || in.space != a_view.space || in.shownAt <= 0.0f || now - in.shownAt < fadeTime) {
                     continue;
@@ -3760,8 +4080,11 @@ float4 PS(VSOut i) : SV_Target
                 const int cx = static_cast<int>(std::floor((in.box[0] + in.box[3]) * 0.5f / kCellSize)) - ox;
                 const int cy = static_cast<int>(std::floor((in.box[1] + in.box[4]) * 0.5f / kCellSize)) - oy;
                 if (cx >= 0 && cx < 32 && cy >= 0 && cy < 32) {
-                    c.landCells[cy] |= 1u << cx;
+                    mask[cy * 32 + cx] = 255;
                 }
+            }
+            if (r.landTex) {
+                context->UpdateSubresource(r.landTex, 0, nullptr, mask, 32, 0);
             }
         }
         D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -3802,8 +4125,8 @@ float4 PS(VSOut i) : SV_Target
         context->VSSetShader(r.vs, nullptr, 0);
         context->PSSetShader(r.ps, nullptr, 0);
         context->PSSetConstantBuffers(1, 1, &r.kindCb);
-        ID3D11ShaderResourceView* const resources[2]{ t.roadMaskSrv, r.fogSrv };
-        context->PSSetShaderResources(0, 2, resources);
+        ID3D11ShaderResourceView* const resources[3]{ t.roadMaskSrv, r.fogSrv, r.landSrv };
+        context->PSSetShaderResources(0, 3, resources);
         std::size_t drawnTriangles = 0, drawCalls = 0;
         if (instancesUp) {
             constexpr UINT kInstanceStride = sizeof(InstanceData);
@@ -3845,6 +4168,9 @@ float4 PS(VSOut i) : SV_Target
             context->ResolveSubresource(t.resolved, 0, t.color, 0, DXGI_FORMAT_R8G8B8A8_UNORM);
         } else {
             context->CopyResource(t.resolved, t.color);
+        }
+        if (Settings::Map().debugLog) {
+            PictureProbe(device, context, t, std::clamp(a_view.slot, 0, 1));
         }
         backup.Restore(context);
         t.drawn = true;

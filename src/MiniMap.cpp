@@ -109,10 +109,10 @@ namespace MiniMap
                    !ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME);
         }
 
-        // where the camera looks, as a heading (radians, 0 = north, clockwise); north up: always 0
-        float CameraYaw(RE::PlayerCharacter* a_player)
+        // where the camera looks, as a heading (radians, 0 = north, clockwise); the map's turn (a_map) with north up: always 0
+        float CameraYaw(RE::PlayerCharacter* a_player, bool a_map = true)
         {
-            if (Settings::Map().northUp) {
+            if (a_map && Settings::Map().northUp) {
                 return 0.0f;
             }
             const auto camera = RE::PlayerCamera::GetSingleton();
@@ -387,10 +387,28 @@ namespace MiniMap
                 std::string path = model->GetModel();
                 std::ranges::transform(path, path.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                 if (path.contains("nirnroot")) {
-                    return path.contains("crimson") ? Kind::kCrimson : Kind::kNirnroot;
+                    // the game's crimson one: FloraNirnroot01Red.nif (its activator, Blackreach's)
+                    const bool red = path.contains("crimson") || path.contains("nirnroot01red") || path.contains("nirnrootred");
+                    return red ? Kind::kCrimson : Kind::kNirnroot;
                 }
             }
             return std::nullopt;
+        }
+
+        // a nirnroot activator picked: activated by the character (kept a while, as the containers looked into), the
+        // game's harvested flag, or its emptied model
+        bool NirnrootPicked(RE::TESObjectREFR* a_ref, RE::TESBoundObject* a_base)
+        {
+            if ((a_ref->formFlags & RE::TESObjectREFR::RecordFlags::kHarvested) != 0 || Fog::Searched(a_ref->GetFormID())) {
+                return true;
+            }
+            const auto model = a_base->As<RE::TESModel>();
+            if (!model || !model->GetModel()) {
+                return false;
+            }
+            std::string path = model->GetModel();
+            std::ranges::transform(path, path.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return path.contains("empty") || path.contains("picked") || path.contains("harvested");
         }
 
         // an ore vein with ore left: an activator running the game's MineOreScript (mods' veins use it too), its
@@ -439,7 +457,8 @@ namespace MiniMap
                         statics.push_back({ a_ref->GetPosition(), Kind::kDoor, a_ref->GetFormID() });
                     }
                 } else if (base->Is(RE::FormType::Container)) {
-                    if (merchants.contains(a_ref->GetFormID()) || (Settings::Map().hideEmpty && !HasLoot(a_ref, base))) {
+                    if (merchants.contains(a_ref->GetFormID()) || (Settings::Map().hideEmpty && !HasLoot(a_ref, base)) ||
+                        (Settings::Map().hideSearched && Fog::Searched(a_ref->GetFormID()))) {
                         return RE::BSContainer::ForEachResult::kContinue;
                     }
                     statics.push_back({ a_ref->GetPosition(), Chest(base) ? Kind::kChest : Kind::kContainer, a_ref->GetFormID() });
@@ -448,6 +467,11 @@ namespace MiniMap
                         statics.push_back({ a_ref->GetPosition(), Nirnroot(base).value_or(Kind::kFlora), a_ref->GetFormID() });
                     }
                 } else if (base->Is(RE::FormType::Activator)) {
+                    // a nirnroot: the game's are activators (their script picks them) - until it was picked
+                    if (const auto nirnroot = Nirnroot(base); nirnroot && !NirnrootPicked(a_ref, base)) {
+                        statics.push_back({ a_ref->GetPosition(), *nirnroot, a_ref->GetFormID() });
+                        return RE::BSContainer::ForEachResult::kContinue;
+                    }
                     if (a_ref->Is3DLoaded() && OreLeft(a_ref)) {
                         statics.push_back({ a_ref->GetPosition(), Kind::kOre, a_ref->GetFormID() });
                     }
@@ -462,6 +486,17 @@ namespace MiniMap
             });
         }
 
+        // in a fight with the player or a follower right now, and not running from it
+        bool Fighting(RE::Actor* a_actor, RE::PlayerCharacter* a_player)
+        {
+            const auto& rd = a_actor->GetActorRuntimeData();
+            if (const auto target = rd.currentCombatTarget.get(); target && (target.get() == a_player || target->IsPlayerTeammate())) {
+                const auto combat = rd.combatController;
+                return !(combat && combat->state && combat->IsFleeing());
+            }
+            return false;
+        }
+
         // an enemy: fighting the player or a follower right now and not running from them (a fox or a deer in "combat"
         // only flees; a guard turned on you fights), or, not in that fight yet, hostile and aggressive by nature (a
         // wolf that has not seen you; a fox is "hostile" too, but unaggressive)
@@ -469,8 +504,7 @@ namespace MiniMap
         {
             const auto& rd = a_actor->GetActorRuntimeData();
             if (const auto target = rd.currentCombatTarget.get(); target && (target.get() == a_player || target->IsPlayerTeammate())) {
-                const auto combat = rd.combatController;
-                return !(combat && combat->state && combat->IsFleeing());
+                return Fighting(a_actor, a_player);
             }
             if (!a_actor->IsHostileToActor(a_player)) {
                 return false;
@@ -528,7 +562,9 @@ namespace MiniMap
                 } else {
                     kind = Kind::kCreature;
                 }
-                if (detect != 0 && (kind == Kind::kEnemy || (detect == 2 && kind != Kind::kFollower)) && !Detected(actor)) {
+                // an enemy already fighting the player or a follower shows without the spell (the setting): found out, no secret
+                if (detect != 0 && (kind == Kind::kEnemy || (detect == 2 && kind != Kind::kFollower)) && !Detected(actor) &&
+                    !(Settings::Map().detectFighting && kind == Kind::kEnemy && Fighting(actor, a_player))) {
                     continue;
                 }
                 a_out.push_back({ actor->GetPosition(), kind, actor->GetFormID() });
@@ -663,6 +699,10 @@ namespace MiniMap
                     if (!quest || !list || !quest->IsActive()) {  // only the quests set active in the journal (as the compass shows them)
                         continue;
                     }
+                    // the miscellaneous ones as a whole: the journal's Miscellaneous entry set active or not
+                    if (quest->GetType() == RE::QUEST_DATA::Type::kMiscellaneous && !Fog::MiscShown()) {
+                        continue;
+                    }
                     for (const auto target : *list) {
                         if (target) {
                             targets.emplace_back(quest, target);
@@ -725,6 +765,7 @@ namespace MiniMap
             float                     heading = 0.0f;  // the character's
             float                     yaw = 0.0f;      // the map's up (camera or north)
             bool                      inside = false;
+            bool                      skyless = false;  // outside in a world with no sky (Blackreach): underground
             float                     underwater = 0.0f;  // 1: the character's head under water (eased in and out)
             float                     waterLevel = 0.0f;  // ...the surface it is under
             RE::FormID                space = 0;
@@ -787,10 +828,13 @@ namespace MiniMap
             World w;
             w.player = a_player->GetPosition();
             w.tall = a_player->GetHeight() > 1.0f ? a_player->GetHeight() : 128.0f;
-            w.heading = Settings::Map().pointerCamera ? CameraYaw(a_player) : a_player->GetAngleZ();  // where the camera looks, or where the body faces
+            w.heading = Settings::Map().pointerCamera ? CameraYaw(a_player, false) : a_player->GetAngleZ();  // where the camera looks, or where the body faces
             w.yaw = a_local ? 0.0f : CameraYaw(a_player);
             const auto cell = a_player->GetParentCell();
             w.inside = cell && cell->IsInteriorCell();
+            if (const auto ws = a_player->GetWorldspace(); ws && !w.inside) {
+                w.skyless = ws->flags.any(RE::TESWorldSpace::Flag::kNoSky);
+            }
             {
                 // the head under water (most of the height submerged): eased over a quarter of a second
                 static float dived = 0.0f;
@@ -871,8 +915,11 @@ namespace MiniMap
             v.width = static_cast<int>(a_w);
             v.height = static_cast<int>(a_h);
             v.player = a_world.player;
-            // inside the ceiling goes (everything this far over the feet); outside nothing is cut
-            v.cut = s.cut && a_world.inside ? s.cutHeight : 1.0e7f;
+            // inside the ceiling goes (everything this far over the feet); outside the objects over the character (not the
+            // landscape): a world with no sky's roof (Blackreach), elsewhere as set
+            const bool cutOn = a_world.inside ? s.cut : a_world.skyless ? s.cutUnderground : s.cutOutside;
+            v.cut = !cutOn ? 1.0e7f : a_world.inside ? s.cutHeight : s.cutHeightOutside;
+            v.cutObjects = !a_world.inside;
             v.space = a_world.space;
             const auto& l = s.look;
             for (int i = 0; i < 3; ++i) {
@@ -890,11 +937,13 @@ namespace MiniMap
             v.shade[0] = l.depthShade;
             v.shade[1] = a_world.inside ? 1.0f : 0.0f;
             v.shade[2] = static_cast<float>(l.style);
+            v.shade[3] = s.debugColours ? 1.0f : 0.0f;  // the diagnostics: coloured by what each surface is
             v.fadeTime = l.fadeTime;
             v.roads[3] = l.roads ? 1.0f + (l.roadWidth - 1.0f) * 150.0f : 0.0f;  // on; past 1: widened by that many world units
             v.water[3] = l.water ? 1.0f : 0.0f;
             v.under[0] = a_world.waterLevel;
             v.under[1] = l.water ? a_world.underwater : 0.0f;
+            v.distant = l.distant;
             return v;
         }
 
@@ -959,7 +1008,7 @@ namespace MiniMap
             float                        alpha = 1.0f;   // the whole map: fading in or out
             float                        cursorX = -1.0f, cursorY = -1.0f;  // the local map: the menu's cursor (drawn over the map)
             bool                         padCursor = false;  // ...the gamepad's pick on the legend instead (no cursor drawn)
-            std::string                  title;          // the local map: where the character is
+            std::string                  title;          // the local map: where the character is (the minimap: its name under it, the setting)
             int                          hover = -1;     // the local map: the icon under the cursor (in icons, or in quests)
             bool                         hoverQuest = false;
             std::string                  hoverName;      // ...and what it is (a door: where it leads)
@@ -2376,6 +2425,9 @@ namespace MiniMap
             UpdatePath(player, dt, false);
             const auto world = TakeWorld(player, false);
             auto       next = BuildMinimap(world, w, h);
+            if (s.zoneName) {
+                next.title = PlaceName(player);  // the place's name under it (the setting)
+            }
             next.alpha = shown * shown * (3.0f - 2.0f * shown) * s.minimapOpacity;  // the fade, times the opacity set
             {
                 std::scoped_lock lock(frameLock);
@@ -2644,6 +2696,33 @@ namespace MiniMap
             D::AddText(a_dl, font, size, at, vanilla ? Rgb(236, 232, 220) : Rgb(225, 230, 240), a_f.title.c_str());
         }
 
+        // the place's name under (or over) the minimap, as set: its size and colour; clear of a frame's picture
+        void DrawZoneName(ImGui::ImDrawList* a_dl, const Frame& a_f, float a_k)
+        {
+            using V2 = ImGui::ImVec2;
+            namespace D = ImGui::ImDrawListManager;
+            const auto  font = ImGui::GetFont();
+            const auto& s = Settings::Map();
+            if (!s.zoneName || a_f.title.empty() || !font) {
+                return;
+            }
+            const float base = ImGui::GetFontSize();
+            const float size = s.zoneSize * a_k;
+            const float kk = base > 0.0f ? size / base : 1.0f;
+            const auto  ts = ImGui::CalcTextSize(a_f.title.c_str());
+            const float w = ts.x * kk, h = ts.y * kk;
+            const float side = a_f.mx1 - a_f.mx0;
+            const float band = s.minimapFrame && !s.look.frameStyle.empty() ? side * (1.0f / Icons::kFrameHole - 1.0f) * 0.5f : (s.minimapFrame ? 4.0f * a_k : 0.0f);
+            const float gap = 4.0f * a_k;
+            float       y = s.zoneAbove ? a_f.my0 - band - gap - h : a_f.my1 + band + gap;
+            y = std::clamp(y, 2.0f * a_k, std::max(screenH.load() - h - 2.0f * a_k, 2.0f * a_k));  // kept on the screen
+            const V2           at{ (a_f.mx0 + a_f.mx1) * 0.5f - w * 0.5f, y };
+            const auto         colour = Rgb(static_cast<int>(s.zoneColor[0] * 255.0f), static_cast<int>(s.zoneColor[1] * 255.0f), static_cast<int>(s.zoneColor[2] * 255.0f));
+            const float        alpha = a_f.alpha;
+            D::AddText(a_dl, font, size, V2{ at.x + 1.5f * a_k, at.y + 1.5f * a_k }, Faded(Rgb(0, 0, 0, 220), alpha), a_f.title.c_str());
+            D::AddText(a_dl, font, size, at, Faded(colour, alpha), a_f.title.c_str());
+        }
+
         // N, E, S, W just inside the rim, where those ways lie on the picture (north red); the letters as the language has them
         void DrawCompass(ImGui::ImDrawList* a_dl, const Frame& a_f, float a_k)
         {
@@ -2699,21 +2778,6 @@ namespace MiniMap
             }
         }
 
-        // the gamepad's key for the game's map (Quick Map): what goes on to the world map from ours
-        std::string PadWorldKey()
-        {
-            const auto events = RE::UserEvents::GetSingleton();
-            const auto map = RE::ControlMap::GetSingleton();
-            const auto id = events && map ? map->GetMappedKey(events->quickMap, RE::INPUT_DEVICE::kGamepad) : 0;
-            constexpr std::uint32_t kButtons[] = { 0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0020, 0x0040, 0x0080, 0x0100, 0x0200, 0x1000, 0x2000, 0x4000, 0x8000, 0x0009, 0x000A };
-            for (std::uint32_t i = 0; i < std::size(kButtons); ++i) {
-                if (id == kButtons[i]) {
-                    return Settings::BindName(266 + i, 0);
-                }
-            }
-            return "Back";
-        }
-
         // the keys, at the bottom: on to the world map, closed
         void DrawHint(ImGui::ImDrawList* a_dl, const Frame& a_f, float a_k)
         {
@@ -2724,7 +2788,7 @@ namespace MiniMap
                 return;
             }
             const auto  turn = Settings::BindName(kRotateKey, 0);
-            const auto  text = padInUse ? std::format("{}  {}        LS  {}        RS  {}        LT / RT  {}        R3  {}        B  {}", PadWorldKey(), Lang::T(Lang::S::HintWorld),
+            const auto  text = padInUse ? std::format("X  {}        LS  {}        RS  {}        LT / RT  {}        R3  {}        B  {}", Lang::T(Lang::S::HintWorld),
                                                          Lang::T(Lang::S::HintMove), Lang::T(Lang::S::HintRotate), Lang::T(Lang::S::HintZoom), Lang::T(Lang::S::HintReset), Lang::T(Lang::S::HintClose)) :
                               std::format("M  {}        {}  {}        R  {}        Esc  {}", Lang::T(Lang::S::HintWorld), turn, Lang::T(Lang::S::HintRotate), Lang::T(Lang::S::HintReset), Lang::T(Lang::S::HintClose));
             const float base = ImGui::GetFontSize();
@@ -2935,8 +2999,34 @@ namespace MiniMap
             if (f.has) {
                 DrawMinimap(dl, f, k);
                 DrawCompass(dl, f, k);
+                DrawZoneName(dl, f, k);
             }
             DrawPerf(dl, k);
+        }
+
+        // the journal's quest list: its Miscellaneous entry (made by the journal itself, no form: "$MISCELLANEOUS")
+        void ReadMiscEntry(RE::JournalMenu* a_menu)
+        {
+            auto&          list = a_menu->GetRuntimeData().questsTab.titleList;
+            RE::GFxValue   entries;
+            if (!list.IsObject() || !list.GetMember("entryList", &entries) || !entries.IsArray()) {
+                return;
+            }
+            for (std::uint32_t i = 0; i < entries.GetArraySize(); ++i) {
+                RE::GFxValue entry, text, active;
+                if (!entries.GetElement(i, &entry) || !entry.IsObject() || !entry.GetMember("text", &text) || !text.IsString()) {
+                    continue;
+                }
+                if (std::string_view(text.GetString()) != "$MISCELLANEOUS" || !entry.GetMember("active", &active) || !active.IsBool()) {
+                    continue;
+                }
+                if (active.GetBool() != Fog::MiscShown()) {
+                    logger::info("journal: Miscellaneous set {}", active.GetBool() ? "active" : "inactive");
+                    Fog::NoteMiscShown(active.GetBool());
+                    sinceStatics = kStaticEvery;  // the quests looked at again at once
+                }
+                return;
+            }
         }
 
         // ---- hooks
@@ -2948,6 +3038,18 @@ namespace MiniMap
             {
                 func(a_this, a_interval, a_currentTime);
                 Update();
+            }
+            static inline REL::Relocation<decltype(thunk)> func;
+        };
+
+        // JournalMenu::AdvanceMovie: its Miscellaneous entry read while it is up - set active or not (the game keeps that
+        // apart from the quests' own active flags, nowhere we can read it)
+        struct JournalAdvanceHook
+        {
+            static void thunk(RE::JournalMenu* a_this, float a_interval, std::uint32_t a_currentTime)
+            {
+                func(a_this, a_interval, a_currentTime);
+                ReadMiscEntry(a_this);
             }
             static inline REL::Relocation<decltype(thunk)> func;
         };
@@ -3188,7 +3290,7 @@ namespace MiniMap
                     if (!captureSlot && code != 0 && button->IsDown() && LocalMenuOpen()) {
                         const bool shut = code == kEscape || code == 15 || code == kPadBase + 11;
                         const bool own = ActionOf(code) == Action::kLocalMap && !(code >= kPadBase && code <= kPadBase + 3);  // the d-pad walks the legend here (B closes)
-                        const bool world = code == 50 || WorldMapEvent(button);
+                        const bool world = code == 50 || code == kPadBase + 12 || WorldMapEvent(button);  // M, the gamepad's X, the game's map key
                         if (overWorld) {
                             if (own || world) {
                                 CloseLocalMenu(false);
@@ -3301,6 +3403,29 @@ namespace MiniMap
         };
 
         // a body's inventory opened: its icon goes
+        // the character activating a nirnroot: picked (its script leaves the reference where it is)
+        class PickSink final : public RE::BSTEventSink<RE::TESActivateEvent>
+        {
+        public:
+            static PickSink* GetSingleton()
+            {
+                static PickSink sink;
+                return &sink;
+            }
+
+            RE::BSEventNotifyControl ProcessEvent(const RE::TESActivateEvent* a_event, RE::BSTEventSource<RE::TESActivateEvent>*) override
+            {
+                const auto player = RE::PlayerCharacter::GetSingleton();
+                const auto ref = a_event ? a_event->objectActivated.get() : nullptr;
+                const auto base = ref ? ref->GetBaseObject() : nullptr;
+                if (base && player && a_event->actionRef.get() == player && base->Is(RE::FormType::Activator) && Nirnroot(base)) {
+                    Fog::NoteSearched(ref->GetFormID());
+                    sinceStatics = kStaticEvery;  // its icon off at once
+                }
+                return RE::BSEventNotifyControl::kContinue;
+            }
+        };
+
         class MenuSink final : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
         {
         public:
@@ -3320,6 +3445,8 @@ namespace MiniMap
                     if (ref && ref->Is(RE::FormType::ActorCharacter)) {
                         std::scoped_lock lock(bodyLock);
                         lookedInto.insert(ref->GetFormID());
+                    } else if (ref && a_event->opening) {
+                        Fog::NoteSearched(ref->GetFormID());  // a container looked into
                     }
                 }
                 return RE::BSEventNotifyControl::kContinue;
@@ -3336,6 +3463,9 @@ namespace MiniMap
             ui->AddEventSink<RE::MenuOpenCloseEvent>(MenuSink::GetSingleton());
             ui->Register(kLocalMenu, LocalMenu::Create);
         }
+        if (const auto events = RE::ScriptEventSourceHolder::GetSingleton()) {
+            events->AddEventSink<RE::TESActivateEvent>(PickSink::GetSingleton());
+        }
         if (SKSEMenuFramework::IsInstalled()) {
             SKSEMenuFramework::AddHudElement(Draw);
         } else {
@@ -3351,6 +3481,8 @@ namespace MiniMap
         ControlsHook::func = controls.write_vfunc(0x1, ControlsHook::thunk);
         REL::Relocation<std::uintptr_t> map{ RE::VTABLE_MapMenu[0] };
         MapAdvanceHook::func = map.write_vfunc(0x5, MapAdvanceHook::thunk);
+        REL::Relocation<std::uintptr_t> journal{ RE::VTABLE_JournalMenu[0] };
+        JournalAdvanceHook::func = journal.write_vfunc(0x5, JournalAdvanceHook::thunk);
         REL::Relocation<std::uintptr_t> mapMove{ RE::VTABLE_MapMoveHandler[0] }, mapLook{ RE::VTABLE_MapLookHandler[0] }, mapZoom{ RE::VTABLE_MapZoomHandler[0] };
         MapHandlerHook<0>::func = mapMove.write_vfunc(0x1, MapHandlerHook<0>::thunk);
         MapHandlerHook<1>::func = mapLook.write_vfunc(0x1, MapHandlerHook<1>::thunk);

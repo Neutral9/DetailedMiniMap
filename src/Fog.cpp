@@ -24,6 +24,15 @@ namespace Fog
         std::unordered_map<RE::FormID, Space>     spaces;
         std::uint64_t                             version = 1;
         std::uint32_t                             generation = 1;
+        std::atomic_bool                          miscShown = true;  // the journal's Miscellaneous entry active (as a new game has it)
+        std::unordered_map<RE::FormID, float>     searched;  // container -> the game's day it was looked into (under the lock)
+        // the detailed log's counts since its last report
+        struct Counts
+        {
+            std::uint64_t updates = 0, skipped = 0, revealing = 0, squares = 0, takes = 0, whole = 0, parts = 0;
+            RE::FormID    space = 0;  // the last one revealed in
+        } counts;
+        constexpr float                           kSearchedDays = 10.0f;  // as long as the game takes to refill one (a cell's reset)
 
         int FloorDiv(int a_v, int a_d)
         {
@@ -77,6 +86,8 @@ namespace Fog
         constexpr std::uint32_t kUniqueId = 'DMMF';
         constexpr std::uint32_t kRecord = 'FOGS';
         constexpr std::uint32_t kVersion = 1;
+        constexpr std::uint32_t kMiscRecord = 'MISC';
+        constexpr std::uint32_t kSearchedRecord = 'SRCH';
 
         void PutVarint(std::vector<std::uint8_t>& a_out, std::uint32_t a_v)
         {
@@ -165,6 +176,27 @@ namespace Fog
                 total += data.size() + 4;
                 ++written;
             }
+            {
+                // the containers looked into: a form and a day each (only the plugins' own: the game's made ones change)
+                std::vector<std::pair<RE::FormID, float>> list;
+                for (const auto& [ref, day] : searched) {
+                    if ((ref >> 24) != 0xFF) {
+                        list.emplace_back(ref, day);
+                    }
+                }
+                const auto count = static_cast<std::uint32_t>(list.size());
+                bool       ok = a_intfc->OpenRecord(kSearchedRecord, 1) && a_intfc->WriteRecordData(count);
+                for (const auto& [ref, day] : list) {
+                    ok = ok && a_intfc->WriteRecordData(ref) && a_intfc->WriteRecordData(day);
+                }
+                if (!ok) {
+                    logger::error("co-save: the containers looked into could not be written");
+                }
+            }
+            const std::uint8_t misc = miscShown ? 1 : 0;
+            if (!a_intfc->OpenRecord(kMiscRecord, 1) || !a_intfc->WriteRecordData(misc)) {
+                logger::error("co-save: the journal's Miscellaneous state could not be written");
+            }
             logger::info("fog: saved {} spaces, {} bytes", written, total);
         }
 
@@ -174,9 +206,31 @@ namespace Fog
             spaces.clear();
             ++version;
             ++generation;
+            miscShown = true;
+            searched.clear();
             std::uint32_t type = 0, ver = 0, length = 0;
             std::size_t   loaded = 0;
             while (a_intfc->GetNextRecordInfo(type, ver, length)) {
+                if (type == kSearchedRecord && length >= 4) {
+                    std::uint32_t count = 0;
+                    a_intfc->ReadRecordData(count);
+                    for (std::uint32_t i = 0; i < count && (i + 1) * 8 + 4 <= length; ++i) {
+                        RE::FormID ref = 0, id = 0;
+                        float      day = 0.0f;
+                        a_intfc->ReadRecordData(ref);
+                        a_intfc->ReadRecordData(day);
+                        if (a_intfc->ResolveFormID(ref, id)) {
+                            searched[id] = day;
+                        }
+                    }
+                    continue;
+                }
+                if (type == kMiscRecord && length >= 1) {
+                    std::uint8_t misc = 1;
+                    a_intfc->ReadRecordData(misc);
+                    miscShown = misc != 0;
+                    continue;
+                }
                 if (type != kRecord || ver != kVersion || length < 5) {
                     continue;
                 }
@@ -218,6 +272,8 @@ namespace Fog
         void OnRevert(SKSE::SerializationInterface*)
         {
             std::scoped_lock guard(lock);
+            miscShown = true;
+            searched.clear();
             spaces.clear();
             ++version;
             ++generation;
@@ -233,10 +289,52 @@ namespace Fog
         s->SetRevertCallback(OnRevert);
     }
 
+    bool MiscShown()
+    {
+        return miscShown;
+    }
+
+    void NoteMiscShown(bool a_shown)
+    {
+        miscShown = a_shown;
+    }
+
+    // the game's day now (0 before a game is up)
+    float Today()
+    {
+        const auto calendar = RE::Calendar::GetSingleton();
+        return calendar ? calendar->GetDaysPassed() : 0.0f;
+    }
+
+    bool Searched(RE::FormID a_ref)
+    {
+        std::scoped_lock guard(lock);
+        const auto       it = searched.find(a_ref);
+        return it != searched.end() && Today() - it->second < kSearchedDays;
+    }
+
+    void Clear()
+    {
+        std::scoped_lock guard(lock);
+        spaces.clear();
+        ++version;
+        ++generation;  // the pictures' window taken whole again
+        logger::info("fog: cleared from the menu");
+    }
+
+    void NoteSearched(RE::FormID a_ref)
+    {
+        const float      today = Today();
+        std::scoped_lock guard(lock);
+        searched[a_ref] = today;
+    }
+
     void Update(RE::PlayerCharacter* a_player, float a_delta)
     {
         const auto cell = a_player ? a_player->GetParentCell() : nullptr;
         if (!cell || a_delta <= 0.0f) {
+            std::scoped_lock guard(lock);
+            ++counts.skipped;
             return;
         }
         const auto& m = Settings::Map();
@@ -253,6 +351,8 @@ namespace Fog
 
         std::scoped_lock guard(lock);
         auto&            s = spaces[id];
+        ++counts.updates;
+        counts.space = id;
         s.inside = inside;
         const int  x0 = static_cast<int>(std::floor((pos.x - radius) / unit)), x1 = static_cast<int>(std::floor((pos.x + radius) / unit));
         const int  y0 = static_cast<int>(std::floor((pos.y - radius) / unit)), y1 = static_cast<int>(std::floor((pos.y + radius) / unit));
@@ -274,10 +374,12 @@ namespace Fog
                 v = static_cast<std::uint8_t>(std::min(target, v + step));
                 MarkDirty(s, x, y);
                 any = true;
+                ++counts.squares;
             }
         }
         if (any) {
             ++version;
+            ++counts.revealing;
         }
     }
 
@@ -298,6 +400,34 @@ namespace Fog
         return std::lerp(top, bottom, ty) / 255.0f;
     }
 
+    std::string Report()
+    {
+        const auto& m = Settings::Map();
+        const auto  player = RE::PlayerCharacter::GetSingleton();
+        const auto  cell = player ? player->GetParentCell() : nullptr;
+        const bool  inside = cell && cell->IsInteriorCell();
+        const auto  world = cell && !inside ? player->GetWorldspace() : nullptr;
+        const auto  id = !cell ? 0 : inside || !world ? cell->GetFormID() : world->GetFormID();
+        const auto  pos = player ? player->GetPosition() : RE::NiPoint3{};
+        const float seen = cell ? Seen(id, pos.x, pos.y) : -1.0f;
+        std::scoped_lock guard(lock);
+        const auto       it = spaces.find(id);
+        std::size_t      blocks = 0, kept = 0;
+        for (const auto& [sid, s] : spaces) {
+            kept += s.blocks.size();
+        }
+        if (it != spaces.end()) {
+            blocks = it->second.blocks.size();
+        }
+        auto text = std::format("fog (cpu): on {}, minimap {}, local map {}, radius {:.0f} / {:.0f} inside, opacity {:.2f}, clears in {:.2f} s; the character in {:08X} ({}) at {:.0f} {:.0f}, "
+                                "seen there {:.2f}; {} spaces, {} blocks ({} here); since the last report: {} updates ({} skipped: no cell or no time), {} revealing {} squares (last in {:08X}), "
+                                "{} takes ({} whole, {} in part)",
+            m.fog, m.fogMinimap, m.fogLocal, m.fogRadius, m.fogRadiusInside, m.look.fogOpacity, m.look.fogFade, id, inside ? "inside" : "outside", pos.x, pos.y, seen,
+            spaces.size(), kept, blocks, counts.updates, counts.skipped, counts.revealing, counts.squares, counts.space, counts.takes, counts.whole, counts.parts);
+        counts = {};
+        return text;
+    }
+
     bool Take(RE::FormID a_space, float a_x, float a_y, Window& a_io, std::vector<std::uint8_t>& a_texels, int (&a_rect)[4])
     {
         std::scoped_lock guard(lock);
@@ -308,6 +438,7 @@ namespace Fog
         const int ox = FloorDiv(static_cast<int>(std::floor(a_x / unit)), kBlock) * kBlock - kTex / 2 + kBlock / 2;
         const int oy = FloorDiv(static_cast<int>(std::floor(a_y / unit)), kBlock) * kBlock - kTex / 2 + kBlock / 2;
         a_texels.resize(static_cast<std::size_t>(kTex) * kTex);
+        ++counts.takes;
         const bool whole = a_io.space != a_space || a_io.ox != ox || a_io.oy != oy || a_io.unit != unit || a_io.generation != generation;
         if (!whole && a_io.version == version) {
             return false;
@@ -331,6 +462,7 @@ namespace Fog
         if (rect[2] <= rect[0] || rect[3] <= rect[1]) {
             return false;
         }
+        ++(whole ? counts.whole : counts.parts);
         // a block at a time: found once, its rows copied
         for (int by = FloorDiv(oy + rect[1], kBlock); by <= FloorDiv(oy + rect[3] - 1, kBlock); ++by) {
             for (int bx = FloorDiv(ox + rect[0], kBlock); bx <= FloorDiv(ox + rect[2] - 1, kBlock); ++bx) {

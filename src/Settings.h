@@ -11,8 +11,8 @@ namespace Settings
         // as SKSE counts them) and a key that must be held with it (0 = none)
         std::uint32_t toggleKey = 49;        // DirectInput scan code (49 = N): the minimap shown / hidden, fading (0 = none)
         std::uint32_t toggleMod = 0;
-        std::uint32_t toggleKeyPad = 269;   // ...and on the gamepad (both work; 0 = none): D-pad right
-        std::uint32_t toggleModPad = 0;
+        std::uint32_t toggleKeyPad = 279;   // ...and on the gamepad (both work; 0 = none): Y with D-pad down held (a button the game has no use for)
+        std::uint32_t toggleModPad = 267;
         bool          toggleHold = false;    // the minimap shown only while its key is held (else the key switches it)
         bool          visible = true;        // shown (the key switches it; remembered)
         int           language = -1;       // the menu's language (Lang order: ru en fr it de es pl zh ja); -1 = the game's
@@ -30,10 +30,16 @@ namespace Settings
         // the characters only while a detect spell is on (Detect Life, Detect Dead, Aura Whisper): 0 always shown,
         // 1 the enemies only then, 2 every character but the followers only then
         int           detectOnly = 0;
+        bool          detectFighting = true;  // ...the enemies fighting you or a follower shown anyway
         bool          minimapRound = true;   // a round minimap instead of the square
         float         minimapCorner = 40.0f; // the square minimap: its corners rounded this far (px at 1080p; 0 = sharp)
         bool          minimapFrame = true;   // its frame (the vanilla style's or the ring) drawn
         bool          pointerCamera = false; // the character's pointer shows where the camera looks (else where the body faces)
+        // the place's name by the minimap (the cell's, the location's or the world's): under it or over it, its size, colour
+        bool          zoneName = false;
+        bool          zoneAbove = false;
+        float         zoneSize = 20.0f;      // px at 1080p
+        float         zoneColor[3] = { 0.93f, 0.91f, 0.86f };
         int           anchor = 1;            // the screen corner the minimap sits in: 0 top left, 1 top right, 2 bottom left, 3 bottom right, 4 the middle
         float         offsetX = 18.0f;       // ...this far from that corner (from the middle: off it, either way) (px at 1080p)
         float         offsetY = 18.0f;
@@ -45,24 +51,28 @@ namespace Settings
         float         lootHeight = 0.0f;     // inside: things to take (not characters, doors, quests) only this far over or under the feet (world units; 0 = all) - another storey's loot left off
         float         minimapOpacity = 1.0f; // the whole minimap (picture, frame, icons) this opaque
         bool          hideEmpty = true;      // containers with nothing to take left off
+        bool          hideSearched = true;   // ...and those looked into (for ten days: the game refills them then)
         bool          groupIcons = true;     // icons of one kind overlapping on the map merged into one
         std::array<bool, 21> show{ true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true };  // per icon kind (Icons::Kind order); the menu toggles them
         bool          cut = true;            // cut away what is over the character (roofs, ceilings)
         float         cutHeight = 80.0f;     // inside: geometry this far over the feet is cut away (roofs, ceilings)
+        bool          cutUnderground = true;  // outside in a world with no sky (Blackreach, Alftand): the objects over the character cut away (not the landscape)
+        bool          cutOutside = false;     // ...in every world outside
+        float         cutHeightOutside = 1000.0f;  // outside: objects this far over the feet are cut away
         // quests
         bool          questBeam = true;      // beams from the character to the quest targets
         bool          beamNearest = false;    // one beam only, to the nearest target of any quest (by the whole way, through doors); else one to each quest set active in the journal
         bool          destinationBeam = true;  // a beam to the destination set on the world map (Set Destination) too
         std::uint32_t beamKey = 48;          // its key (48 = B; 0 = none): the beam shown / hidden
         std::uint32_t beamMod = 0;
-        std::uint32_t beamKeyPad = 266;   // ...and on the gamepad (both work; 0 = none): D-pad up
-        std::uint32_t beamModPad = 0;
+        std::uint32_t beamKeyPad = 278;   // ...and on the gamepad (both work; 0 = none): X with D-pad down held
+        std::uint32_t beamModPad = 267;
         // the game's local map (in the map menu) replaced by this one: dragged with the mouse, zoomed with the wheel
         bool          localMap = true;
         std::uint32_t localMapKey = 38;      // the key that opens the local map straight from the game (38 = L; 0 = none)
         std::uint32_t localMapMod = 0;
-        std::uint32_t localMapKeyPad = 268;   // ...and on the gamepad (both work; 0 = none): D-pad left
-        std::uint32_t localMapModPad = 0;
+        std::uint32_t localMapKeyPad = 276;   // ...and on the gamepad (both work; 0 = none): A with D-pad down held
+        std::uint32_t localMapModPad = 267;
         bool          localMapHold = false;  // the local map open only while its key is held (else the key opens and closes it)
         // the local map turned and tilted: the right mouse button held (the gamepad: its right stick)
         bool          rotateInvertX = false;  // the turn the other way round (left / right)
@@ -75,12 +85,12 @@ namespace Settings
         // the minimap's range (outside or inside, where the character is) zoomed in and out: Shift + the wheel
         std::uint32_t zoomInKey = 264;
         std::uint32_t zoomInMod = 42;
-        std::uint32_t zoomInKeyPad = 281;   // ...and on the gamepad (both work; 0 = none): RT, held
-        std::uint32_t zoomInModPad = 0;
+        std::uint32_t zoomInKeyPad = 281;   // ...and on the gamepad (both work; 0 = none): RT with D-pad down held
+        std::uint32_t zoomInModPad = 267;
         std::uint32_t zoomOutKey = 265;
         std::uint32_t zoomOutMod = 42;
-        std::uint32_t zoomOutKeyPad = 280;   // ...and on the gamepad (both work; 0 = none): LT, held
-        std::uint32_t zoomOutModPad = 0;
+        std::uint32_t zoomOutKeyPad = 280;   // ...and on the gamepad (both work; 0 = none): LT with D-pad down held
+        std::uint32_t zoomOutModPad = 267;
         // the fog of war: the map hidden where the character has not been (what was seen kept in each save's .skse)
         bool          fog = true;
         bool          fogMinimap = true;      // on the minimap
@@ -89,7 +99,9 @@ namespace Settings
         float         fogRadiusInside = 1000.0f;  // ...inside
         bool          fogHideIcons = true;    // the icons under the fog hidden too (not the quests')
         bool          debugLog = false;      // a detailed log (timings, rebuilds, the reasons) in DetailedMiniMap.log
+        bool          debugColours = false;  // the map coloured by what each surface is (objects, landscape, water, distant LOD): diagnostics
         bool          padBinds = false;      // the gamepad's default binds given once (an older ini had none)
+        bool          padBinds2 = false;     // ...moved off the buttons the game uses once (an ini still on the old D-pad and triggers alone)
         // the look (the menu's second page; {} = the defaults)
         struct Look
         {
@@ -112,6 +124,7 @@ namespace Settings
             float roadWidth = 1.0f;                           // 1 .. 3: 1 = as the navmesh has it, every step past 1 widens by 150 units a side
             bool  water = true;                               // lakes, rivers, the sea
             bool  seeUnderwater = true;                       // the character under water: the water seen through (the bottom, wrecks, chests)
+            bool  distant = true;                             // the game's distant land, water and objects (its LOD) past the loaded cells
             float waterColor[3] = { 0.146f, 0.392f, 0.637f };
             int   style = 1;                                  // 0 = the colours above, 1 = vanilla (the game's local map: sepia, its frame)
             // the icons: a folder of Data/Textures/DetailedMiniMap/icons (every folder there is a style to pick)
@@ -140,7 +153,7 @@ namespace Settings
     void Load();
     void Save();
     void ResetMap();   // the map page to the defaults (DetailedMiniMap.ini, else the built-in ones), the language too (the game's)
-    void ResetLook();  // the look page to the defaults; the style stays
+    void ResetLook();  // the look page to the defaults (its styles too)
 
     // the item the map needs: copies, as the menu edits it while the game reads it
     std::string NeedItemId();
