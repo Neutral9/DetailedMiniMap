@@ -40,6 +40,7 @@ namespace Settings
         bool          zoneAbove = false;
         float         zoneSize = 20.0f;      // px at 1080p
         float         zoneColor[3] = { 0.93f, 0.91f, 0.86f };
+        bool          showCleared = true;    // "Cleared" under the place's name (the minimap's, the local map's) where the game marks it cleared
         int           anchor = 1;            // the screen corner the minimap sits in: 0 top left, 1 top right, 2 bottom left, 3 bottom right, 4 the middle
         float         offsetX = 18.0f;       // ...this far from that corner (from the middle: off it, either way) (px at 1080p)
         float         offsetY = 18.0f;

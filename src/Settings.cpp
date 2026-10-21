@@ -211,6 +211,7 @@ namespace Settings
             a_f("Map", "MinimapFrame", m.minimapFrame);
             a_f("Map", "PointerCamera", m.pointerCamera);
             a_f("Map", "ZoneName", m.zoneName);
+            a_f("Map", "ShowCleared", m.showCleared);
             a_f("Map", "ZoneAbove", m.zoneAbove);
             a_f("Map", "ZoneSize", m.zoneSize, 10.0f, 48.0f);
             a_f("Map", "ZoneR", m.zoneColor[0], 0.0f, 1.0f);
@@ -407,6 +408,7 @@ namespace Settings
             a_to.zoneAbove = a_from.zoneAbove;
             a_to.zoneSize = a_from.zoneSize;
             std::copy(std::begin(a_from.zoneColor), std::end(a_from.zoneColor), a_to.zoneColor);
+            a_to.showCleared = a_from.showCleared;
             a_to.anchor = a_from.anchor;
             a_to.offsetX = a_from.offsetX;
             a_to.offsetY = a_from.offsetY;

@@ -188,3 +188,5 @@ FogReset = Nebel für diesen Spielstand zurücksetzen
 FogResetConfirm = Erneut klicken, um alles Erkundete zu vergessen
 DetectFighting = ...aber Feinde im Kampf mit dir immer zeigen
 DebugColours = Karte nach Quelle färben (Objekte rot, Gelände grün, Wasser blau, ferne LOD gelb)
+ShowCleared = "Gesäubert" für gesäuberte Orte zeigen (Minikarte und lokale Karte)
+Cleared = Gesäubert

@@ -188,3 +188,5 @@ FogReset = このセーブの霧をリセット
 FogResetConfirm = もう一度押すと探索済みがすべて消えます
 DetectFighting = ……ただし交戦中の敵は常に表示
 DebugColours = ソース別にマップを色分け（オブジェクト赤・地形緑・水青・遠景LOD黄）
+ShowCleared = 制圧済みの場所に「制圧済み」を表示（ミニマップとローカルマップ）
+Cleared = 制圧済み

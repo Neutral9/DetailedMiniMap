@@ -420,6 +420,7 @@ namespace Menu
                 Slider(S::ZoneSize, m.zoneSize, 10.0f, 48.0f, "%.0f");
                 Color(Lang::L(S::ZoneColor).c_str(), m.zoneColor);
             }
+            Check(Lang::L(S::ShowCleared).c_str(), m.showCleared);
 
             ImGui::SeparatorText(Lang::T(S::SecPosition));
             {

@@ -188,3 +188,5 @@ FogReset = Restablecer la niebla de esta partida
 FogResetConfirm = Pulsa otra vez para olvidar todo lo explorado
 DetectFighting = ...pero mostrar siempre a los enemigos que te atacan
 DebugColours = Colorear el mapa por origen (objetos rojos, terreno verde, agua azul, LOD lejano amarillo)
+ShowCleared = Mostrar "Despejado" en lugares despejados (minimapa y mapa local)
+Cleared = Despejado

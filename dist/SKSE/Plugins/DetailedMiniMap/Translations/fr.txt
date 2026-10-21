@@ -188,3 +188,5 @@ FogReset = Réinitialiser le brouillard de cette sauvegarde
 FogResetConfirm = Cliquez encore pour tout oublier
 DetectFighting = ...mais toujours afficher les ennemis qui vous combattent
 DebugColours = Colorer la carte par source (objets rouges, terrain vert, eau bleue, LOD lointain jaune)
+ShowCleared = Afficher "Nettoyé" pour les lieux nettoyés (mini-carte et carte locale)
+Cleared = Nettoyé

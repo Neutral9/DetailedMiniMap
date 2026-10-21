@@ -188,3 +188,5 @@ FogReset = Zresetuj mgłę dla tego zapisu
 FogResetConfirm = Kliknij ponownie, aby zapomnieć wszystko
 DetectFighting = ...ale zawsze pokazuj wrogów, którzy z tobą walczą
 DebugColours = Koloruj mapę według źródła (obiekty czerwone, teren zielony, woda niebieska, odległe LOD żółte)
+ShowCleared = Pokazuj "Oczyszczone" dla oczyszczonych miejsc (minimapa i mapa lokalna)
+Cleared = Oczyszczone

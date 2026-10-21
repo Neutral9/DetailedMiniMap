@@ -188,3 +188,5 @@ FogReset = Azzera la nebbia di questo salvataggio
 FogResetConfirm = Clicca di nuovo per dimenticare tutto
 DetectFighting = ...ma mostra sempre i nemici che ti combattono
 DebugColours = Colora la mappa per origine (oggetti rossi, terreno verde, acqua blu, LOD lontano giallo)
+ShowCleared = Mostra "Ripulito" per i luoghi ripuliti (minimappa e mappa locale)
+Cleared = Ripulito

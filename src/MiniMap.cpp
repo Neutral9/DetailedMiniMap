@@ -441,16 +441,40 @@ namespace MiniMap
             if (!tes) {
                 return;
             }
+            // a body turned to ash (a disintegration perk, an ash spawn): the body gone, its things in the ash pile - the
+            // icon on the pile (the game links the two either way round)
+            std::unordered_set<RE::FormID> ashen;
+            std::vector<Marker>            bodies;  // the whole ones: in once every ash pile is known
+            const auto                     ashBody = [&](RE::TESObjectREFR* a_body, RE::TESObjectREFR* a_pile) {
+                const auto actor = a_body ? a_body->As<RE::Actor>() : nullptr;
+                if (actor && actor != a_player && actor->IsDead() && a_pile && !a_pile->IsDeleted() && ashen.insert(actor->GetFormID()).second && WorthALook(actor)) {
+                    statics.push_back({ a_pile->GetPosition(), Kind::kBody, actor->GetFormID() });
+                }
+            };
             tes->ForEachReferenceInRange(a_player, markerRange, [&](RE::TESObjectREFR* a_ref) {
                 const auto base = a_ref ? a_ref->GetBaseObject() : nullptr;
-                if (!base || a_ref->IsDisabled() || a_ref->IsDeleted()) {
+                if (!base || a_ref->IsDeleted()) {
+                    return RE::BSContainer::ForEachResult::kContinue;
+                }
+                if (const auto ash = a_ref->extraList.GetByType<RE::ExtraAshPileRef>()) {
+                    const auto other = ash->ashPileRef.get();
+                    if (a_ref->Is(RE::FormType::ActorCharacter)) {
+                        ashBody(a_ref, other.get());
+                    } else {
+                        ashBody(other.get(), a_ref);
+                    }
+                    if (a_ref->Is(RE::FormType::ActorCharacter)) {
+                        return RE::BSContainer::ForEachResult::kContinue;
+                    }
+                }
+                if (a_ref->IsDisabled()) {
                     return RE::BSContainer::ForEachResult::kContinue;
                 }
                 if (a_ref->Is(RE::FormType::ActorCharacter)) {
                     // the living are taken every frame (Characters); here the dead
                     const auto actor = a_ref->As<RE::Actor>();
                     if (actor && actor != a_player && actor->IsDead() && actor->Is3DLoaded() && WorthALook(actor)) {
-                        statics.push_back({ a_ref->GetPosition(), Kind::kBody, a_ref->GetFormID() });
+                        bodies.push_back({ a_ref->GetPosition(), Kind::kBody, a_ref->GetFormID() });
                     }
                 } else if (base->Is(RE::FormType::Door)) {
                     if (a_ref->extraList.HasType<RE::ExtraTeleport>()) {
@@ -484,6 +508,12 @@ namespace MiniMap
                 }
                 return RE::BSContainer::ForEachResult::kContinue;
             });
+            // the whole bodies: not those with an ash pile (their icon is on it)
+            for (const auto& b : bodies) {
+                if (!ashen.contains(b.id)) {
+                    statics.push_back(b);
+                }
+            }
         }
 
         // in a fight with the player or a follower right now, and not running from it
@@ -1009,6 +1039,7 @@ namespace MiniMap
             float                        cursorX = -1.0f, cursorY = -1.0f;  // the local map: the menu's cursor (drawn over the map)
             bool                         padCursor = false;  // ...the gamepad's pick on the legend instead (no cursor drawn)
             std::string                  title;          // the local map: where the character is (the minimap: its name under it, the setting)
+            bool                         cleared = false;  // the place is cleared (the game's mark): "Cleared" under its name
             int                          hover = -1;     // the local map: the icon under the cursor (in icons, or in quests)
             bool                         hoverQuest = false;
             std::string                  hoverName;      // ...and what it is (a door: where it leads)
@@ -1617,6 +1648,19 @@ namespace MiniMap
             return world && world->GetFullName() ? world->GetFullName() : "";
         }
 
+        // the place the character is in cleared, as the world map marks it: its location, or one it lies in (a dungeon's
+        // inner part in the dungeon)
+        bool PlaceCleared(RE::PlayerCharacter* a_player)
+        {
+            int depth = 0;
+            for (auto location = a_player->GetCurrentLocation(); location && depth < 8; location = location->parentLoc, ++depth) {
+                if (location->IsCleared()) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         Frame BuildLocal(RE::PlayerCharacter* a_player, const World& a_world, float a_w, float a_h)
         {
             const auto& s = Settings::Map();
@@ -1662,6 +1706,7 @@ namespace MiniMap
             f.view = view;
             std::tie(f.cursorX, f.cursorY) = Cursor(a_w, a_h);
             f.title = PlaceName(a_player);
+            f.cleared = Settings::Map().showCleared && PlaceCleared(a_player);
             return f;
         }
 
@@ -2428,6 +2473,7 @@ namespace MiniMap
             if (s.zoneName) {
                 next.title = PlaceName(player);  // the place's name under it (the setting)
             }
+            next.cleared = s.showCleared && PlaceCleared(player);
             next.alpha = shown * shown * (3.0f - 2.0f * shown) * s.minimapOpacity;  // the fade, times the opacity set
             {
                 std::scoped_lock lock(frameLock);
@@ -2694,6 +2740,15 @@ namespace MiniMap
             const V2    at{ (a_f.mx0 + a_f.mx1) * 0.5f - ts.x * kk * 0.5f, a_f.my0 + std::max(18.0f * a_k, CompassRoom(a_k) + 4.0f * a_k) };  // under the compass's letter
             D::AddText(a_dl, font, size, V2{ at.x + 2.0f * a_k, at.y + 2.0f * a_k }, Rgb(0, 0, 0, 220), a_f.title.c_str());
             D::AddText(a_dl, font, size, at, vanilla ? Rgb(236, 232, 220) : Rgb(225, 230, 240), a_f.title.c_str());
+            if (a_f.cleared) {
+                const char* text = Lang::T(Lang::S::Cleared);
+                const float lesser = 20.0f * a_k;
+                const auto  cs = ImGui::CalcTextSize(text);
+                const float ck = base > 0.0f ? lesser / base : 1.0f;
+                const V2    under{ (a_f.mx0 + a_f.mx1) * 0.5f - cs.x * ck * 0.5f, at.y + ts.y * kk + 2.0f * a_k };
+                D::AddText(a_dl, font, lesser, V2{ under.x + 1.5f * a_k, under.y + 1.5f * a_k }, Rgb(0, 0, 0, 220), text);
+                D::AddText(a_dl, font, lesser, under, Rgb(150, 205, 140), text);
+            }
         }
 
         // the place's name under (or over) the minimap, as set: its size and colour; clear of a frame's picture
@@ -2703,24 +2758,43 @@ namespace MiniMap
             namespace D = ImGui::ImDrawListManager;
             const auto  font = ImGui::GetFont();
             const auto& s = Settings::Map();
-            if (!s.zoneName || a_f.title.empty() || !font) {
+            const bool  name = s.zoneName && !a_f.title.empty();
+            if ((!name && !a_f.cleared) || !font) {
                 return;
             }
             const float base = ImGui::GetFontSize();
             const float size = s.zoneSize * a_k;
-            const float kk = base > 0.0f ? size / base : 1.0f;
-            const auto  ts = ImGui::CalcTextSize(a_f.title.c_str());
-            const float w = ts.x * kk, h = ts.y * kk;
+            const float lesser = size * 0.8f;
+            const char* cleared = Lang::T(Lang::S::Cleared);
+            // the lines: the name, "Cleared" under it (smaller)
+            const auto  measure = [&](const char* a_text, float a_size) {
+                const auto  ts = ImGui::CalcTextSize(a_text);
+                const float k = base > 0.0f ? a_size / base : 1.0f;
+                return std::pair{ ts.x * k, ts.y * k };
+            };
+            const auto  nameSize = name ? measure(a_f.title.c_str(), size) : std::pair{ 0.0f, 0.0f };
+            const auto  clearedSize = a_f.cleared ? measure(cleared, lesser) : std::pair{ 0.0f, 0.0f };
+            const float h = nameSize.second + clearedSize.second;
             const float side = a_f.mx1 - a_f.mx0;
             const float band = s.minimapFrame && !s.look.frameStyle.empty() ? side * (1.0f / Icons::kFrameHole - 1.0f) * 0.5f : (s.minimapFrame ? 4.0f * a_k : 0.0f);
             const float gap = 4.0f * a_k;
             float       y = s.zoneAbove ? a_f.my0 - band - gap - h : a_f.my1 + band + gap;
             y = std::clamp(y, 2.0f * a_k, std::max(screenH.load() - h - 2.0f * a_k, 2.0f * a_k));  // kept on the screen
-            const V2           at{ (a_f.mx0 + a_f.mx1) * 0.5f - w * 0.5f, y };
-            const auto         colour = Rgb(static_cast<int>(s.zoneColor[0] * 255.0f), static_cast<int>(s.zoneColor[1] * 255.0f), static_cast<int>(s.zoneColor[2] * 255.0f));
-            const float        alpha = a_f.alpha;
-            D::AddText(a_dl, font, size, V2{ at.x + 1.5f * a_k, at.y + 1.5f * a_k }, Faded(Rgb(0, 0, 0, 220), alpha), a_f.title.c_str());
-            D::AddText(a_dl, font, size, at, Faded(colour, alpha), a_f.title.c_str());
+            const float alpha = a_f.alpha;
+            const float mid = (a_f.mx0 + a_f.mx1) * 0.5f;
+            const auto  line = [&](const char* a_text, float a_size, float a_w, ImGui::ImU32 a_colour) {
+                const V2 at{ mid - a_w * 0.5f, y };
+                D::AddText(a_dl, font, a_size, V2{ at.x + 1.5f * a_k, at.y + 1.5f * a_k }, Faded(Rgb(0, 0, 0, 220), alpha), a_text);
+                D::AddText(a_dl, font, a_size, at, Faded(a_colour, alpha), a_text);
+            };
+            if (name) {
+                line(a_f.title.c_str(), size, nameSize.first,
+                    Rgb(static_cast<int>(s.zoneColor[0] * 255.0f), static_cast<int>(s.zoneColor[1] * 255.0f), static_cast<int>(s.zoneColor[2] * 255.0f)));
+                y += nameSize.second;
+            }
+            if (a_f.cleared) {
+                line(cleared, lesser, clearedSize.first, Rgb(150, 205, 140));
+            }
         }
 
         // N, E, S, W just inside the rim, where those ways lie on the picture (north red); the letters as the language has them

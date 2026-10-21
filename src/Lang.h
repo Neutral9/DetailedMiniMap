@@ -195,6 +195,8 @@ namespace Lang
         FogResetConfirm,
         DetectFighting,
         DebugColours,
+        ShowCleared,
+        Cleared,
         kCount
     };
 
