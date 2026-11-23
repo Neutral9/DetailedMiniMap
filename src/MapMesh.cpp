@@ -1476,6 +1476,8 @@ namespace MapMesh
             return rd.shaderProperty && rd.shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kTreeAnim);
         }
 
+        constexpr float kLodCoarsestRadius = 70000.0f;  // a distant land block with a bigger bound is a level 32 one
+
         void CollectLod(RE::NiAVObject* a_obj, std::vector<RE::BSTriShape*>& a_out, bool a_hidden, int a_depth)
         {
             if (!a_obj || a_depth > 64) {
@@ -1491,6 +1493,19 @@ namespace MapMesh
             const auto geom = a_obj->AsGeometry();
             const auto tri = geom ? geom->AsTriShape() : nullptr;
             if (!tri) {
+                return;
+            }
+            // the coarsest blocks (level 32: 32 x 32 cells, a bound of 92 000 units and more; a level 16 one stays under
+            // 55 000) are what the world map draws, and what map mods (Flat World Map Framework, paper maps) swap for
+            // their map: a sheet hung over the whole world. The game shows them 60 cells off at the nearest - no map of
+            // this mod reaches that far, yet taken "shown or not" the sheet lay over everything
+            if (tri->worldBound.radius > kLodCoarsestRadius) {
+                if (static int logs = 0; logs < 8) {
+                    ++logs;
+                    const auto& b = tri->worldBound;
+                    logger::info("map 3d: distant land '{}' r {:.0f} at ({:.0f} {:.0f} {:.0f}): a level 32 block (the world map's) - left out", tri->name.c_str(), b.radius,
+                        b.center.x, b.center.y, b.center.z);
+                }
                 return;
             }
             if (IsLodLand(tri)) {
