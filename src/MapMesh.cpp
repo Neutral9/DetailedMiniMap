@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 #include <condition_variable>
 #include <queue>
+#include <span>
 #include <thread>
 #include <unordered_set>
 
@@ -16,6 +17,15 @@ namespace MapMesh
 {
     namespace
     {
+        // a node's children: the slots in use only (up to its free index). Past it the array holds whatever was there
+        // before - a destructible's blast node, its pieces swapped, keeps stale pointers there (a crash, read as one)
+        template <class N>
+        auto Kids(N* a_node)
+        {
+            auto&             c = a_node->GetChildren();
+            const std::size_t n = std::min<std::size_t>(c.free_idx(), c.capacity());
+            return std::span(c.begin(), n);
+        }
         constexpr float       kRoadsEvery = 1.0f / 3.0f;     // seconds: the loaded cells' road triangles are looked at this often
         constexpr double      kWorkMs = 0.4;                 // main thread: what gathering the map may take in a frame (ms)
         constexpr std::size_t kUploadBytes = 6u << 20;       // render thread: geometry sent to the GPU in one frame at most
@@ -259,6 +269,34 @@ namespace MapMesh
                 [&](std::string_view a_word) { return path.contains(a_word); });
         }
 
+        // the shape's own diffuse texture, lower case ("" if it has none we can read)
+        std::string DiffuseOf(const RE::BSShaderProperty* a_shader)
+        {
+            const auto lit = netimmerse_cast<const RE::BSLightingShaderProperty*>(a_shader);
+            const auto material = lit ? static_cast<RE::BSLightingShaderMaterialBase*>(lit->material) : nullptr;
+            const auto set = material ? material->textureSet.get() : nullptr;
+            const char* path = set ? set->GetTexturePath(RE::BSTextureSet::Texture::kDiffuse) : nullptr;
+            std::string out = path ? path : "";
+            std::ranges::transform(out, out.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return out;
+        }
+
+        // an alpha-tested shape's own look, whoever owns it: 1 a plant's card (hanging roots on a rock or a ground chunk,
+        // moss, ivy, leaves - by its texture or its name), -1 a trunk (bark: kept even on a tree), 0 nothing to tell
+        int PlantLook(const RE::NiAVObject* a_shape, const RE::BSShaderProperty* a_shader)
+        {
+            std::string name = a_shape->name.c_str();
+            std::ranges::transform(name, name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            const auto texture = DiffuseOf(a_shader);
+            const auto has = [&](std::string_view a_word) { return name.contains(a_word) || texture.contains(a_word); };
+            if (has("bark") || has("trunk")) {
+                return -1;
+            }
+            constexpr std::array<std::string_view, 14> kWords{ "root", "leaf", "leaves", "moss", "ivy", "vines", "branch", "canopy", "needle", "fern",
+                "grass", "hanging", "foliage", "shrub" };
+            return std::ranges::any_of(kWords, has) ? 1 : 0;
+        }
+
         // ---- the mesh filter: Data/SKSE/Plugins/DetailedMiniMap/MeshFilter.json - two lists of words looked for in a
         // mesh's name and its model's path (any case): "Blacklist" leaves such meshes off the map ("@rule": one of the
         // mod's own rules, on - a rule not listed is off; no file: all on), "Whitelist" keeps them whatever the
@@ -473,7 +511,7 @@ namespace MapMesh
                 return false;
             }
             if (const auto node = a_obj->AsNode()) {
-                for (const auto& child : node->GetChildren()) {
+                for (const auto& child : Kids(node)) {
                     if (child && IsWaterShape(child.get())) {
                         return false;
                     }
@@ -526,7 +564,7 @@ namespace MapMesh
                 // a switch shows one of its children; the others are never updated (no bound, a stale transform) and
                 // decode into garbage - huge sheets
                 const auto  switchNode = netimmerse_cast<RE::NiSwitchNode*>(node);
-                const auto& children = node->GetChildren();
+                const auto& children = Kids(node);
                 Trace(a_obj, a_depth, std::format("{} children{}", children.size(), switchNode ? std::format(", a switch on {}", switchNode->index) : ""));
                 // every slot of the array: its size() counts the children only, and empty slots may lie before them (a
                 // mesh edited in NifSkope: the rest were never looked at)
@@ -578,11 +616,15 @@ namespace MapMesh
                 Trace(a_obj, a_depth, "a rule (effect shader, see-through, refraction, decal)");
                 return;
             }
-            // trees, bushes, grass: a canopy over the ground
-            if (!kept && !water && Rule("foliage") && rd.alphaProperty && rd.alphaProperty->GetAlphaTesting() && IsFoliage(a_owner, rd.shaderProperty.get())) {
-                ++collectStats.foliage;
-                Trace(a_obj, a_depth, "foliage");
-                return;
+            // trees, bushes, grass: a canopy over the ground; and plant cards on anything else (roots hanging off a rock
+            // or a ground chunk, moss, ivy) by the shape's own texture or name. Bark stays, on a tree too
+            if (!kept && !water && Rule("foliage") && rd.alphaProperty && rd.alphaProperty->GetAlphaTesting()) {
+                const int look = PlantLook(a_obj, rd.shaderProperty.get());
+                if (look > 0 || (look == 0 && IsFoliage(a_owner, rd.shaderProperty.get()))) {
+                    ++collectStats.foliage;
+                    Trace(a_obj, a_depth, std::format("foliage ({}, texture '{}')", look > 0 ? "its look" : "its owner", DiffuseOf(rd.shaderProperty.get())));
+                    return;
+                }
             }
             // small things (a plate, a cup, a coin purse): under a pixel on any map, yet often most of a city cell's triangles.
             // A small part of a thing big enough to show is kept while it is a fair share of it (a mannequin's helmet,
@@ -595,7 +637,11 @@ namespace MapMesh
                 Trace(a_obj, a_depth, "tiny");
                 return;
             }
-            Trace(a_obj, a_depth, "taken");
+            if (collectTrace) {
+                const auto alpha = rd.alphaProperty.get();
+                Trace(a_obj, a_depth, std::format("taken (alpha {}, texture '{}')", alpha ? (alpha->GetAlphaBlending() ? "blend" : alpha->GetAlphaTesting() ? "test" : "off") : "none",
+                                          DiffuseOf(rd.shaderProperty.get())));
+            }
             a_out.push_back(tri);
         }
 
@@ -1116,7 +1162,7 @@ namespace MapMesh
                 if (const auto sw = netimmerse_cast<RE::NiSwitchNode*>(node)) {
                     h = Mix(h ^ static_cast<std::uint64_t>(sw->index + 7));
                 }
-                for (const auto& child : node->GetChildren()) {
+                for (const auto& child : Kids(node)) {
                     h = Mix(h + TreeHash(child.get(), a_depth + 1));
                 }
                 return h;
@@ -1177,7 +1223,7 @@ namespace MapMesh
                 return;
             }
             if (const auto node = a_obj->AsNode()) {
-                for (const auto& child : node->GetChildren()) {
+                for (const auto& child : Kids(node)) {
                     CountMeshes(child.get(), a_count, a_depth + 1);
                 }
             } else if (a_obj->AsGeometry()) {
@@ -1193,7 +1239,7 @@ namespace MapMesh
             const auto flags = a_obj->GetFlags().underlying();
             if (const auto node = a_obj->AsNode()) {
                 a_out += std::format("\n    node '{}' flags {:08X}{}", a_obj->name.c_str(), flags, a_obj->GetUserData() ? " (a reference)" : "");
-                for (const auto& child : node->GetChildren()) {
+                for (const auto& child : Kids(node)) {
                     ListMeshes(child.get(), a_out, a_depth + 1);
                 }
                 return;
@@ -1417,7 +1463,7 @@ namespace MapMesh
                 return;
             }
             const auto  sw = netimmerse_cast<RE::NiSwitchNode*>(node);
-            const auto& children = node->GetChildren();
+            const auto& children = Kids(node);
             std::int32_t slot = -1;  // every slot (see Collect)
             for (const auto& child : children) {
                 ++slot;
@@ -1440,7 +1486,7 @@ namespace MapMesh
                 if (const auto sw = netimmerse_cast<RE::NiSwitchNode*>(node)) {
                     h = Mix(h ^ static_cast<std::uint64_t>(sw->index + 7));
                 }
-                for (const auto& child : node->GetChildren()) {
+                for (const auto& child : Kids(node)) {
                     h = Mix(h + LooseHash(child.get(), a_depth + 1));
                 }
             }
@@ -1483,7 +1529,7 @@ namespace MapMesh
             }
             const bool off = a_hidden || a_obj->GetFlags().any(RE::NiAVObject::Flag::kHidden, RE::NiAVObject::Flag::kNotVisible);
             if (const auto node = a_obj->AsNode()) {
-                for (const auto& child : node->GetChildren()) {
+                for (const auto& child : Kids(node)) {
                     CollectLod(child.get(), a_out, off, a_depth + 1);
                 }
                 return;
@@ -1510,7 +1556,7 @@ namespace MapMesh
             const bool    off = a_hidden || a_obj->GetFlags().any(RE::NiAVObject::Flag::kHidden, RE::NiAVObject::Flag::kNotVisible);
             std::uint64_t h = reinterpret_cast<std::uintptr_t>(a_obj);
             if (const auto node = a_obj->AsNode()) {
-                for (const auto& child : node->GetChildren()) {
+                for (const auto& child : Kids(node)) {
                     h = Mix(h + LodHash(child.get(), off, a_depth + 1));
                 }
                 return Mix(h);
@@ -2025,7 +2071,7 @@ namespace MapMesh
                         }
                         const bool off = a_hidden || a_obj->GetFlags().any(RE::NiAVObject::Flag::kHidden, RE::NiAVObject::Flag::kNotVisible);
                         if (const auto node = a_obj->AsNode()) {
-                            for (const auto& child : node->GetChildren()) {
+                            for (const auto& child : Kids(node)) {
                                 walk(child.get(), off, a_depth + 1);
                             }
                             return;
@@ -4073,6 +4119,7 @@ float4 PS(VSOut i) : SV_Target
             c.landOrigin[0] = static_cast<float>(ox);
             c.landOrigin[1] = static_cast<float>(oy);
             std::uint8_t mask[32 * 32]{};
+            std::uint8_t own[32 * 32]{};  // the cells whose own landscape is in
             for (const auto& in : instances) {
                 if (!in.model || in.model->kind != kLand || in.owner == kLodLand || in.space != a_view.space || in.shownAt <= 0.0f || now - in.shownAt < fadeTime) {
                     continue;
@@ -4080,7 +4127,22 @@ float4 PS(VSOut i) : SV_Target
                 const int cx = static_cast<int>(std::floor((in.box[0] + in.box[3]) * 0.5f / kCellSize)) - ox;
                 const int cy = static_cast<int>(std::floor((in.box[1] + in.box[4]) * 0.5f / kCellSize)) - oy;
                 if (cx >= 0 && cx < 32 && cy >= 0 && cy < 32) {
-                    mask[cy * 32 + cx] = 255;
+                    own[cy * 32 + cx] = 1;
+                }
+            }
+            // the distant land goes only where a cell and every one round it has its own landscape: along the edge it
+            // runs on under the cells' own (lower: hidden by it), so the step down to it shows that ground, not a black
+            // gap through to nothing
+            for (int y = 0; y < 32; ++y) {
+                for (int x = 0; x < 32; ++x) {
+                    bool all = own[y * 32 + x] != 0;
+                    for (int dy = -1; dy <= 1 && all; ++dy) {
+                        for (int dx = -1; dx <= 1 && all; ++dx) {
+                            const int nx = x + dx, ny = y + dy;
+                            all = nx >= 0 && nx < 32 && ny >= 0 && ny < 32 && own[ny * 32 + nx] != 0;
+                        }
+                    }
+                    mask[y * 32 + x] = all ? 255 : 0;
                 }
             }
             if (r.landTex) {

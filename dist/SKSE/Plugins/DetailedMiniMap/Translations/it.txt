@@ -190,3 +190,6 @@ DetectFighting = ...ma mostra sempre i nemici che ti combattono
 DebugColours = Colora la mappa per origine (oggetti rossi, terreno verde, acqua blu, LOD lontano giallo)
 ShowCleared = Mostra "Ripulito" per i luoghi ripuliti (minimappa e mappa locale)
 Cleared = Ripulito
+AnimalParts = Parti di animali
+Fish = Pesci
+Critters = Insetti

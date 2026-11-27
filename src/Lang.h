@@ -197,6 +197,9 @@ namespace Lang
         DebugColours,
         ShowCleared,
         Cleared,
+        AnimalParts,
+        Fish,
+        Critters,
         kCount
     };
 

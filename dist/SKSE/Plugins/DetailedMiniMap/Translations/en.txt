@@ -190,3 +190,6 @@ DetectFighting = ...but always show enemies fighting you
 DebugColours = Colour the map by source (objects red, land green, water blue, distant LOD yellow)
 ShowCleared = Show "Cleared" for cleared places (minimap and local map)
 Cleared = Cleared
+AnimalParts = Animal parts
+Fish = Fish
+Critters = Insects

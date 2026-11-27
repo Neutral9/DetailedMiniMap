@@ -190,3 +190,6 @@ DetectFighting = ……但一律顯示正在與你戰鬥的敵人
 DebugColours = 依來源為地圖上色（物件紅、地形綠、水藍、遠景 LOD 黃）
 ShowCleared = 已清除的地點顯示「已清除」（小地圖與區域地圖）
 Cleared = 已清除
+AnimalParts = 動物部位
+Fish = 魚
+Critters = 昆蟲

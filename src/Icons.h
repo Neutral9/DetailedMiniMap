@@ -31,6 +31,9 @@ namespace Icons
         kNirnroot,  // a nirnroot to pick (it chimes, it glows)
         kCrimson,   // a crimson nirnroot (Blackreach)
         kDestination,  // the destination set on the world map (Set Destination)
+        kAnimalPart,   // a thing to harvest that is no plant: tusks, antlers, horns, feathers, scales (Dynamic Things and the like)
+        kFish,         // a fish: swimming in a river (a critter), or one to catch
+        kCritter,      // butterflies, moths, dragonflies, torchbugs
         kTotal
     };
     inline constexpr std::size_t kCount = static_cast<std::size_t>(Kind::kTotal);

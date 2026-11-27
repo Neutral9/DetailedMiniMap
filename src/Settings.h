@@ -54,7 +54,7 @@ namespace Settings
         bool          hideEmpty = true;      // containers with nothing to take left off
         bool          hideSearched = true;   // ...and those looked into (for ten days: the game refills them then)
         bool          groupIcons = true;     // icons of one kind overlapping on the map merged into one
-        std::array<bool, 21> show{ true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true };  // per icon kind (Icons::Kind order); the menu toggles them
+        std::array<bool, 24> show{ true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true };  // per icon kind (Icons::Kind order); the menu toggles them
         bool          cut = true;            // cut away what is over the character (roofs, ceilings)
         float         cutHeight = 80.0f;     // inside: geometry this far over the feet is cut away (roofs, ceilings)
         bool          cutUnderground = true;  // outside in a world with no sky (Blackreach, Alftand): the objects over the character cut away (not the landscape)

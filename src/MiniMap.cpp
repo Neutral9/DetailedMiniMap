@@ -100,13 +100,54 @@ namespace MiniMap
             return std::ranges::any_of(kMenus, [&](std::string_view a_name) { return ui->IsMenuOpen(a_name); });
         }
 
-        // the HUD is up: no menu over it, not loading, not hidden (by a scene, the console's tm)
+        // the screen black or fading: after a load screen the game fades in from black (its Fader Menu) and the HUD
+        // comes up with the world - the minimap waits for it. Only a fade: one open far longer is no fade, the map shows
+        float appear = 1.0f;                    // main thread: the minimap coming back after a load screen, 0..1 (eased in)
+        constexpr float kAppearTime = 0.8f;     // seconds it takes
+
+        bool FadingNow(RE::UI* a_ui)
+        {
+            using Clock = std::chrono::steady_clock;
+            static Clock::time_point since{};
+            static bool              loading = false;
+            const auto               now = Clock::now();
+            if (a_ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME)) {
+                loading = true;
+                since = now;
+                return true;
+            }
+            if (a_ui->IsMenuOpen(RE::FaderMenu::MENU_NAME)) {
+                if (since == Clock::time_point{}) {
+                    since = now;
+                }
+                return now - since < std::chrono::seconds(6);
+            }
+            // a load just over and no fade (yet): a moment more, the fade may open next frame and the HUD shows late
+            if (loading) {
+                if (now - since < std::chrono::milliseconds(750)) {
+                    return true;
+                }
+                loading = false;
+            }
+            since = {};
+            return false;
+        }
+
+        bool Fading(RE::UI* a_ui)
+        {
+            const bool fading = FadingNow(a_ui);
+            if (fading) {
+                appear = 0.0f;  // it comes back with a fade, not at once
+            }
+            return fading;
+        }
+
+        // the HUD is up: no menu over it, not loading or fading in from black, not hidden (by a scene, the console's tm)
         bool HudShown()
         {
             const auto ui = RE::UI::GetSingleton();
             menuOver = MenuOver();
-            return ui && !ui->GameIsPaused() && !menuOver && ui->IsShowingMenus() && ui->IsMenuOpen(RE::HUDMenu::MENU_NAME) &&
-                   !ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME);
+            return ui && !ui->GameIsPaused() && !menuOver && ui->IsShowingMenus() && ui->IsMenuOpen(RE::HUDMenu::MENU_NAME) && !Fading(ui);
         }
 
         // where the camera looks, as a heading (radians, 0 = north, clockwise); the map's turn (a_map) with north up: always 0
@@ -206,6 +247,8 @@ namespace MiniMap
             float  alpha = 0.0f;
             float  at = 0.0f;  // iconClock it was last brought up to date
             Marker marker;
+            RE::NiPoint3 shownAt{};       // where its icon is drawn: eased after where it is (no jerks as it moves)
+            bool         placed = false;  // shownAt set
         };
         std::unordered_map<std::uint64_t, Seen> seen;
         float                                   iconClock = 0.0f;
@@ -395,6 +438,125 @@ namespace MiniMap
             return std::nullopt;
         }
 
+        std::string Lowered(const char* a_s)
+        {
+            std::string out = a_s ? a_s : "";
+            std::ranges::transform(out, out.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return out;
+        }
+
+        std::string ModelPath(RE::TESForm* a_form)
+        {
+            const auto model = a_form ? a_form->As<RE::TESModel>() : nullptr;
+            return Lowered(model ? model->GetModel() : nullptr);
+        }
+
+        bool HasWord(std::string_view a_text, std::initializer_list<std::string_view> a_words)
+        {
+            return std::ranges::any_of(a_words, [&](std::string_view a_w) { return a_text.contains(a_w); });
+        }
+
+        bool Fishy(std::string_view a_text)
+        {
+            return HasWord(a_text, { "fish", "salmon", "carp", "betty", "trout", "perch", "pike", "goby" });
+        }
+
+        // what a plant or a harvest spot gives: its produce, through leveled lists (their first entry, a few levels down)
+        RE::TESForm* Produce(RE::TESBoundObject* a_base)
+        {
+            RE::TESForm* produce = nullptr;
+            if (const auto flora = a_base->As<RE::TESFlora>()) {
+                produce = flora->produceItem;
+            } else if (const auto tree = a_base->As<RE::TESObjectTREE>()) {
+                produce = tree->produceItem;
+            }
+            for (int depth = 0; produce && depth < 4; ++depth) {
+                const auto list = produce->As<RE::TESLevItem>();
+                if (!list) {
+                    break;
+                }
+                produce = list->entries.size() > 0 ? list->entries[0].form : nullptr;
+            }
+            return produce;
+        }
+
+        // a part of an animal (or a monster): the game's VendorItemAnimalPart / AnimalHide, or by its model or name
+        bool AnimalPart(RE::TESForm* a_item)
+        {
+            static const auto keywords = [] {
+                const auto data = RE::TESDataHandler::GetSingleton();
+                return std::array<RE::BGSKeyword*, 2>{ data ? data->LookupForm<RE::BGSKeyword>(0x0914EB, "Skyrim.esm") : nullptr,
+                    data ? data->LookupForm<RE::BGSKeyword>(0x0914EA, "Skyrim.esm") : nullptr };
+            }();
+            if (const auto form = a_item->As<RE::BGSKeywordForm>()) {
+                for (const auto keyword : keywords) {
+                    if (keyword && form->HasKeyword(keyword)) {
+                        return true;
+                    }
+                }
+            }
+            const auto text = ModelPath(a_item) + "|" + Lowered(a_item->GetName());
+            return HasWord(text, { "tusk", "antler", "horn", "tooth", "teeth", "eye", "scale", "chitin", "feather", "claw", "fang", "talon", "pelt",
+                                     "hide", "bone", "shell", "wing", "heart", "taproot", "ivory" });
+        }
+
+        // a harvest spot's icon (flora, a tree with produce): by what it gives - a plant's ingredient a plant, an animal's
+        // part, a fish, food, a potion, a misc thing as the item itself (one icon for firewood, straw: not a plant)
+        Kind HarvestKind(RE::TESBoundObject* a_base)
+        {
+            if (const auto nirnroot = Nirnroot(a_base)) {
+                return *nirnroot;
+            }
+            const auto produce = Produce(a_base);
+            const auto model = ModelPath(a_base);
+            if (Fishy(model) || (produce && Fishy(ModelPath(produce) + "|" + Lowered(produce->GetName())))) {
+                return Kind::kFish;
+            }
+            if (!produce) {
+                return Kind::kFlora;
+            }
+            // a garden's or a field's crop stays a plant, whatever it gives
+            const bool plant = HasWord(model, { "plant", "flora", "crop", "garden", "landscape\\" });
+            switch (produce->GetFormType()) {
+            case RE::FormType::AlchemyItem:
+                if (static_cast<RE::AlchemyItem*>(produce)->IsFood()) {
+                    return plant ? Kind::kFlora : Kind::kFood;
+                }
+                return Kind::kPotion;
+            case RE::FormType::Ingredient:
+                return AnimalPart(produce) ? Kind::kAnimalPart : Kind::kFlora;
+            case RE::FormType::Misc:
+                return Clutter(static_cast<RE::TESBoundObject*>(produce)) ? Kind::kClutter : Kind::kLoot;
+            case RE::FormType::Weapon:
+            case RE::FormType::Ammo:
+                return Kind::kWeapon;
+            case RE::FormType::Armor:
+                return Kind::kArmor;
+            case RE::FormType::Book:
+            case RE::FormType::Scroll:
+            case RE::FormType::SoulGem:
+            case RE::FormType::KeyMaster:
+                return Kind::kLoot;
+            default:
+                return Kind::kFlora;
+            }
+        }
+
+        // a critter (the game's are activators with a Critter script, spawned near the player): fish in the water, moths,
+        // butterflies, dragonflies, torchbugs - by the model (Meshes\Critters\...); their spawners are markers
+        std::optional<Kind> CritterKind(RE::TESBoundObject* a_base)
+        {
+            const auto model = ModelPath(a_base);
+            if (model.empty() || model.contains("spawn") || model.contains("marker")) {
+                return std::nullopt;
+            }
+            const bool critter = HasWord(model, { "critter", "moth", "butterfly", "dragonfly", "torchbug", "firefly" });
+            if (!critter) {
+                return std::nullopt;
+            }
+            return Fishy(model) ? Kind::kFish : Kind::kCritter;
+        }
+
         // a nirnroot activator picked: activated by the character (kept a while, as the containers looked into), the
         // game's harvested flag, or its emptied model
         bool NirnrootPicked(RE::TESObjectREFR* a_ref, RE::TESBoundObject* a_base)
@@ -445,6 +607,8 @@ namespace MiniMap
             // icon on the pile (the game links the two either way round)
             std::unordered_set<RE::FormID> ashen;
             std::vector<Marker>            bodies;  // the whole ones: in once every ash pile is known
+            std::vector<Marker>            harvests, items;  // plants and harvest spots, things lying about: in once both are known
+            std::vector<RE::FormID>        harvestGives, itemBases;  // per harvest spot what it gives, per item its base
             const auto                     ashBody = [&](RE::TESObjectREFR* a_body, RE::TESObjectREFR* a_pile) {
                 const auto actor = a_body ? a_body->As<RE::Actor>() : nullptr;
                 if (actor && actor != a_player && actor->IsDead() && a_pile && !a_pile->IsDeleted() && ashen.insert(actor->GetFormID()).second && WorthALook(actor)) {
@@ -488,7 +652,9 @@ namespace MiniMap
                     statics.push_back({ a_ref->GetPosition(), Chest(base) ? Kind::kChest : Kind::kContainer, a_ref->GetFormID() });
                 } else if (base->Is(RE::FormType::Flora) || base->Is(RE::FormType::Tree)) {
                     if (Pickable(a_ref, base)) {
-                        statics.push_back({ a_ref->GetPosition(), Nirnroot(base).value_or(Kind::kFlora), a_ref->GetFormID() });
+                        const auto produce = Produce(base);
+                        harvests.push_back({ a_ref->GetPosition(), HarvestKind(base), a_ref->GetFormID() });
+                        harvestGives.push_back(produce ? produce->GetFormID() : 0);
                     }
                 } else if (base->Is(RE::FormType::Activator)) {
                     // a nirnroot: the game's are activators (their script picks them) - until it was picked
@@ -496,18 +662,39 @@ namespace MiniMap
                         statics.push_back({ a_ref->GetPosition(), *nirnroot, a_ref->GetFormID() });
                         return RE::BSContainer::ForEachResult::kContinue;
                     }
-                    if (a_ref->Is3DLoaded() && OreLeft(a_ref)) {
+                    if (!a_ref->Is3DLoaded()) {
+                        return RE::BSContainer::ForEachResult::kContinue;
+                    }
+                    if (const auto critter = CritterKind(base)) {
+                        statics.push_back({ a_ref->GetPosition(), *critter, a_ref->GetFormID() });
+                    } else if (OreLeft(a_ref)) {
                         statics.push_back({ a_ref->GetPosition(), Kind::kOre, a_ref->GetFormID() });
                     }
                 } else if (a_ref->Is3DLoaded()) {
                     if (const auto kind = ItemKind(base)) {
                         // a quest's item is never clutter, whatever it looks like
                         const auto as = *kind == Kind::kClutter && a_ref->extraList.HasQuestObjectAlias() ? Kind::kLoot : *kind;
-                        statics.push_back({ a_ref->GetPosition(), as, a_ref->GetFormID() });
+                        items.push_back({ a_ref->GetPosition(), as, a_ref->GetFormID() });
+                        itemBases.push_back(base->GetFormID());
                     }
                 }
                 return RE::BSContainer::ForEachResult::kContinue;
             });
+            // a harvest spot with the thing it gives lying on it too (Dynamic Things' firewood, straw: a flora and the item
+            // in one place) - one icon, the harvest spot's
+            for (std::size_t n = 0; n < items.size(); ++n) {
+                bool twin = false;
+                for (std::size_t h = 0; h < harvests.size() && !twin; ++h) {
+                    const auto& a = items[n].pos;
+                    const auto& b = harvests[h].pos;
+                    const float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+                    twin = dx * dx + dy * dy + dz * dz < 64.0f * 64.0f && (harvestGives[h] == itemBases[n] || harvests[h].kind == items[n].kind);
+                }
+                if (!twin) {
+                    statics.push_back(items[n]);
+                }
+            }
+            statics.insert(statics.end(), harvests.begin(), harvests.end());
             // the whole bodies: not those with an ash pile (their icon is on it)
             for (const auto& b : bodies) {
                 if (!ashen.contains(b.id)) {
@@ -637,12 +824,34 @@ namespace MiniMap
             // fade in what turned up; what is gone stays a moment longer, fading out
             const auto  step = [](float a_fade, float a_dt) { return a_fade > 0.0f ? a_dt / a_fade : 1.0f; };
             const auto  key = [](const Marker& a_m) { return (static_cast<std::uint64_t>(a_m.id) << 8) | static_cast<std::uint64_t>(a_m.kind); };
+            // what moves (characters taken as the game moves them - far ones a few times a second -, critters with the
+            // statics four times a second) drawn eased after itself, smooth; a jump (a teleport, a load door) at once
+            using Clock = std::chrono::steady_clock;
+            static Clock::time_point last = Clock::now();
+            const auto               now = Clock::now();
+            const float              dt = std::clamp(std::chrono::duration<float>(now - last).count(), 0.0f, 0.1f);
+            last = now;
+            const auto ease = [&](Seen& a_e, const Marker& a_m) {
+                const float dx = a_m.pos.x - a_e.shownAt.x, dy = a_m.pos.y - a_e.shownAt.y, dz = a_m.pos.z - a_e.shownAt.z;
+                if (!a_e.placed || dx * dx + dy * dy + dz * dz > 600.0f * 600.0f) {
+                    a_e.shownAt = a_m.pos;
+                    a_e.placed = true;
+                    return;
+                }
+                const bool  gathered = a_m.kind == Kind::kFish || a_m.kind == Kind::kCritter;  // moved in steps of kStaticEvery
+                const float k = 1.0f - std::exp(-dt * (gathered ? 7.0f : 14.0f));
+                a_e.shownAt.x += dx * k;
+                a_e.shownAt.y += dy * k;
+                a_e.shownAt.z += dz * k;
+            };
             for (auto& m : out) {
                 auto& e = seen.try_emplace(key(m), Seen{ 0.0f, iconClock, m }).first->second;
                 e.alpha = std::min(e.alpha + step(s.iconFadeIn, e.at < 0.0f ? 0.0f : iconClock - e.at), 1.0f);
                 e.at = -1.0f;  // there this time
                 e.marker = m;
+                ease(e, m);
                 m.alpha = e.alpha;
+                m.pos = e.shownAt;
             }
             for (auto it = seen.begin(); it != seen.end();) {
                 auto& e = it->second;
@@ -659,6 +868,7 @@ namespace MiniMap
                 }
                 auto m = e.marker;
                 m.alpha = e.alpha;
+                m.pos = e.shownAt;
                 out.push_back(m);
                 ++it;
             }
@@ -2474,7 +2684,9 @@ namespace MiniMap
                 next.title = PlaceName(player);  // the place's name under it (the setting)
             }
             next.cleared = s.showCleared && PlaceCleared(player);
-            next.alpha = shown * shown * (3.0f - 2.0f * shown) * s.minimapOpacity;  // the fade, times the opacity set
+            appear = std::min(appear + dt / kAppearTime, 1.0f);
+            const float back = appear * appear * (3.0f - 2.0f * appear);  // after a load screen: eased in
+            next.alpha = shown * shown * (3.0f - 2.0f * shown) * back * s.minimapOpacity;  // the fade, times the opacity set
             {
                 std::scoped_lock lock(frameLock);
                 frame = std::move(next);

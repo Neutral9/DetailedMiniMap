@@ -12,7 +12,7 @@
         "@refraction",     // the heat shimmer over a fire
         "@decal",          // blood, dirt, scorch marks on floors and walls
         "@effectshader",   // meshes with an effect's shader: fire, magic, glow
-        "@foliage",        // trees, bushes and grass: a canopy over the ground
+        "@foliage",        // trees, bushes and grass: a canopy over the ground; plant cards on anything (hanging roots, moss, ivy) - bark kept
         "@tiny",           // small things (plates, cups, coins): under a pixel, yet most of a city's triangles
 
         // ---- by name or path

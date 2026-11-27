@@ -43,6 +43,9 @@ namespace Icons
             { "nirnroot", 0xF4D8, 110, 205, 240 },
             { "crimsonnirnroot", 0xF4D8, 225, 60, 80 },
             { "destination", 0xF276, 100, 235, 215 },
+            { "animalpart", 0xF5D7, 225, 200, 170 },
+            { "fish", 0xF578, 90, 180, 230 },
+            { "critter", 0xF188, 200, 220, 120 },
         };
         static_assert(std::size(kStyles) == kCount);
 
@@ -116,7 +119,17 @@ namespace Icons
 
     const char* Name(Kind a_kind)
     {
-        return Lang::T(static_cast<Lang::S>(static_cast<int>(Lang::S::Enemies) + static_cast<int>(a_kind)));
+        // the first kinds' names lie in a row from Enemies; the ones added later at the texts' end
+        switch (a_kind) {
+        case Kind::kAnimalPart:
+            return Lang::T(Lang::S::AnimalParts);
+        case Kind::kFish:
+            return Lang::T(Lang::S::Fish);
+        case Kind::kCritter:
+            return Lang::T(Lang::S::Critters);
+        default:
+            return Lang::T(static_cast<Lang::S>(static_cast<int>(Lang::S::Enemies) + static_cast<int>(a_kind)));
+        }
     }
 
     const char* File(Kind a_kind)

@@ -190,3 +190,6 @@ DetectFighting = ...aber Feinde im Kampf mit dir immer zeigen
 DebugColours = Karte nach Quelle färben (Objekte rot, Gelände grün, Wasser blau, ferne LOD gelb)
 ShowCleared = "Gesäubert" für gesäuberte Orte zeigen (Minikarte und lokale Karte)
 Cleared = Gesäubert
+AnimalParts = Tierteile
+Fish = Fische
+Critters = Insekten
